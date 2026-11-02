@@ -156,6 +156,13 @@ pub struct Lichtkasten {
     searching: bool,
     /// Suchfeld soll den Fokus bekommen (Strg+F).
     focus_search: bool,
+    /// Rasterzustand des letzten Frames, um beim Nachsortieren die
+    /// Scrollposition am obersten sichtbaren Bild festzuhalten.
+    grid_cols: usize,
+    grid_offset: f32,
+    grid_anchor: Option<PathBuf>,
+    /// Einmalig anzuwendender Scrollversatz nach einem Nachsortieren.
+    grid_scroll_fix: Option<f32>,
 }
 
 enum VideoSlot {
@@ -264,6 +271,10 @@ impl Lichtkasten {
             in_search: false,
             searching: false,
             focus_search: false,
+            grid_cols: 0,
+            grid_offset: 0.0,
+            grid_anchor: None,
+            grid_scroll_fix: None,
         };
 
         if let Some(path) = app.prefs.last_folder.clone() {
@@ -1496,8 +1507,24 @@ impl eframe::App for Lichtkasten {
         }
         if capture_changed && self.prefs.sort == SortBy::Captured {
             let keep = self.remember_path();
+            let anchor = self.grid_anchor.clone();
+            let old_row = anchor
+                .as_ref()
+                .and_then(|path| self.visible_index(path))
+                .map(|index| index / self.grid_cols.max(1));
             self.sort_photos();
             self.restore_path(keep);
+            // Das oberste sichtbare Bild bleibt stehen, der Rest ordnet sich darum.
+            if let (Some(old_row), Some(path)) = (old_row, anchor)
+                && let Some(new_index) = self.visible_index(&path)
+            {
+                let new_row = new_index / self.grid_cols.max(1);
+                if new_row != old_row {
+                    let step = self.prefs.thumb_size + GAP;
+                    let shift = (new_row as f32 - old_row as f32) * step;
+                    self.grid_scroll_fix = Some((self.grid_offset + shift).max(0.0));
+                }
+            }
         }
         self.refresh_meta();
         self.thumbs.request_captures(&self.photos, self.focus);
@@ -2147,7 +2174,21 @@ fn info_section(ui: &mut egui::Ui, title: &str, rows: &[(String, String)]) -> bo
 fn info_row(ui: &mut egui::Ui, key: &str, value: &str) {
     ui.add_space(3.0);
     ui.label(RichText::new(key).small().color(theme::MUTED));
-    ui.label(RichText::new(value).color(theme::INK));
+    // Auch Werte ohne Leerzeichen (Hex-Dateinamen, Seriennummern) brechen um,
+    // sonst drückt der Inhalt die Leiste breiter und das Raster bricht neu um.
+    let width = ui.available_width().max(40.0);
+    let mut job = LayoutJob::simple(
+        value.to_owned(),
+        FontId::proportional(14.0),
+        theme::INK,
+        width,
+    );
+    job.wrap = TextWrapping {
+        max_width: width,
+        break_anywhere: true,
+        ..Default::default()
+    };
+    ui.add(egui::Label::new(job).wrap());
     ui.add_space(4.0);
 }
 
@@ -2524,111 +2565,117 @@ fn draw_grid(ui: &mut egui::Ui, app: &mut Lichtkasten) {
         }
     }
 
-    egui::ScrollArea::vertical()
+    let mut area = egui::ScrollArea::vertical()
         .auto_shrink([false, false])
-        .id_salt("photo-grid")
-        .show_rows(ui, row_h, rows, |ui, row_range| {
-            for row in row_range {
-                ui.horizontal(|ui| {
-                    ui.add_space(GRID_PAD);
-                    for col in 0..cols {
-                        let index = row * cols + col;
-                        if index >= app.photos.len() {
-                            break;
-                        }
-                        vis_start = vis_start.min(index);
-                        vis_end = vis_end.max(index + 1);
-                        let selected = app.selected.contains(&index);
-                        let is_video = library::is_video_path(&app.photos[index].path);
-                        let name = app.photos[index].name.clone();
-                        let failed = app.thumbs.failed(&app.photos[index].path);
-                        let texture = app.thumbs.texture(&app.photos[index].path);
+        .id_salt("photo-grid");
+    if let Some(offset) = app.grid_scroll_fix.take() {
+        area = area.vertical_scroll_offset(offset);
+    }
+    let output = area.show_rows(ui, row_h, rows, |ui, row_range| {
+        for row in row_range {
+            ui.horizontal(|ui| {
+                ui.add_space(GRID_PAD);
+                for col in 0..cols {
+                    let index = row * cols + col;
+                    if index >= app.photos.len() {
+                        break;
+                    }
+                    vis_start = vis_start.min(index);
+                    vis_end = vis_end.max(index + 1);
+                    let selected = app.selected.contains(&index);
+                    let is_video = library::is_video_path(&app.photos[index].path);
+                    let name = app.photos[index].name.clone();
+                    let failed = app.thumbs.failed(&app.photos[index].path);
+                    let texture = app.thumbs.texture(&app.photos[index].path);
 
-                        let (rect, resp) =
-                            ui.allocate_exact_size(Vec2::splat(thumb), Sense::click_and_drag());
-                        let painter = ui.painter();
-                        painter.rect_filled(
+                    let (rect, resp) =
+                        ui.allocate_exact_size(Vec2::splat(thumb), Sense::click_and_drag());
+                    let painter = ui.painter();
+                    painter.rect_filled(
+                        rect,
+                        CornerRadius::same(2),
+                        thumbs::placeholder_color(time, failed),
+                    );
+                    if let Some(texture) = texture {
+                        painter.image(
+                            texture.id(),
+                            rect,
+                            cover_uv(texture.size_vec2()),
+                            Color32::WHITE,
+                        );
+                    }
+                    if selected {
+                        painter.rect_stroke(
                             rect,
                             CornerRadius::same(2),
-                            thumbs::placeholder_color(time, failed),
+                            Stroke::new(1.0, theme::INK),
+                            StrokeKind::Outside,
                         );
-                        if let Some(texture) = texture {
-                            painter.image(
-                                texture.id(),
-                                rect,
-                                cover_uv(texture.size_vec2()),
-                                Color32::WHITE,
-                            );
-                        }
-                        if selected {
-                            painter.rect_stroke(
-                                rect,
-                                CornerRadius::same(2),
-                                Stroke::new(1.0, theme::INK),
-                                StrokeKind::Outside,
-                            );
-                        }
-                        if is_video {
-                            painter.text(
-                                rect.left_bottom() + Vec2::new(8.0, -7.0),
-                                Align2::LEFT_BOTTOM,
-                                "▶",
-                                FontId::proportional(12.0),
-                                Color32::WHITE,
-                            );
-                        }
-                        let path = app.photos[index].path.clone();
-                        let resp = resp.on_hover_text(name);
-                        resp.context_menu(|ui| {
-                            if app.in_trash {
-                                if ui.button(i18n::t("Wiederherstellen", "Restore")).clicked() {
-                                    restore = Some(index);
-                                    ui.close();
-                                }
-                                ui.separator();
-                            } else {
-                                if app.current_album.is_some()
-                                    && ui
-                                        .button(i18n::t("Als Deckblatt", "Set as cover"))
-                                        .clicked()
-                                {
-                                    cover = Some(index);
-                                    ui.close();
-                                }
-                                if ui
-                                    .button(i18n::t("In den Papierkorb", "Move to trash"))
-                                    .clicked()
-                                {
-                                    to_trash = Some(index);
-                                    ui.close();
-                                }
-                                ui.separator();
-                            }
-                            draw_open_with_menu(ui, app, &path);
-                        });
-                        if resp.hovered() {
-                            ui.ctx().set_cursor_icon(if app.dragging {
-                                CursorIcon::Grabbing
-                            } else {
-                                CursorIcon::PointingHand
-                            });
-                        }
-                        if resp.drag_started() && !app.in_trash {
-                            select = Some(index);
-                            app.dragging = true;
-                            app.prefs.source = SourcePane::Albums;
-                        }
-                        if resp.clicked() {
-                            select = Some(index);
-                        }
-                        if resp.double_clicked() {
-                            activate = Some(index);
-                        }
                     }
-                });
-            }
-        });
+                    if is_video {
+                        painter.text(
+                            rect.left_bottom() + Vec2::new(8.0, -7.0),
+                            Align2::LEFT_BOTTOM,
+                            "▶",
+                            FontId::proportional(12.0),
+                            Color32::WHITE,
+                        );
+                    }
+                    let path = app.photos[index].path.clone();
+                    let resp = resp.on_hover_text(name);
+                    resp.context_menu(|ui| {
+                        if app.in_trash {
+                            if ui.button(i18n::t("Wiederherstellen", "Restore")).clicked() {
+                                restore = Some(index);
+                                ui.close();
+                            }
+                            ui.separator();
+                        } else {
+                            if app.current_album.is_some()
+                                && ui
+                                    .button(i18n::t("Als Deckblatt", "Set as cover"))
+                                    .clicked()
+                            {
+                                cover = Some(index);
+                                ui.close();
+                            }
+                            if ui
+                                .button(i18n::t("In den Papierkorb", "Move to trash"))
+                                .clicked()
+                            {
+                                to_trash = Some(index);
+                                ui.close();
+                            }
+                            ui.separator();
+                        }
+                        draw_open_with_menu(ui, app, &path);
+                    });
+                    if resp.hovered() {
+                        ui.ctx().set_cursor_icon(if app.dragging {
+                            CursorIcon::Grabbing
+                        } else {
+                            CursorIcon::PointingHand
+                        });
+                    }
+                    if resp.drag_started() && !app.in_trash {
+                        select = Some(index);
+                        app.dragging = true;
+                        app.prefs.source = SourcePane::Albums;
+                    }
+                    if resp.clicked() {
+                        select = Some(index);
+                    }
+                    if resp.double_clicked() {
+                        activate = Some(index);
+                    }
+                }
+            });
+        }
+    });
 
+    app.grid_cols = cols;
+    app.grid_offset = output.state.clamped_offset().y;
+    app.grid_anchor = app.photos.get(vis_start).map(|photo| photo.path.clone());
     if vis_start < vis_end {
         let from = vis_start.saturating_sub(cols);
         let to = (vis_end + cols).min(app.photos.len());
