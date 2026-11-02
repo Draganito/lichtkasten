@@ -3,7 +3,7 @@ use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use egui::{Color32, Context, TextureHandle, TextureOptions};
+use egui::{Color32, ColorImage, Context, TextureHandle, TextureOptions};
 use lru::LruCache;
 
 use crate::cache;
@@ -13,8 +13,20 @@ use crate::library;
 use crate::library::Photo;
 use crate::meta::FileInfo;
 
+/// Grundkapazität des Texturcaches; wächst mit, wenn mehr sichtbar ist.
 const TEXTURE_LIMIT: usize = 240;
+/// Reserve über der sichtbaren Menge, damit Scrollen nicht sofort verdrängt.
+const TEXTURE_MARGIN: usize = 64;
 const APPLY_BUDGET: Duration = Duration::from_millis(4);
+
+/// Hochgeladene Miniatur samt dem, was sie abdecken kann.
+struct Tex {
+    handle: TextureHandle,
+    /// Kurze Seite in Pixeln; muss die Zelle (Cover-Zuschnitt) abdecken.
+    short: u32,
+    /// Volle Auflösung des Plattencaches, größer geht nicht.
+    full: bool,
+}
 
 pub struct ThumbService {
     generation: u64,
@@ -24,7 +36,9 @@ pub struct ThumbService {
     /// Alles, was in diesem Frame sichtbar gemeldet wurde (Raster, Filmstreifen,
     /// Album-Deckblätter). Jobs außerhalb dieser Menge werden verworfen.
     wanted: HashSet<PathBuf>,
-    textures: LruCache<PathBuf, TextureHandle>,
+    textures: LruCache<PathBuf, Tex>,
+    /// Zellengröße in Gerätepixeln; Texturen werden darauf verkleinert.
+    cell_px: u32,
     failed: HashSet<PathBuf>,
     pub pending: usize,
     pub ready: usize,
@@ -57,6 +71,7 @@ impl ThumbService {
             inflight: HashSet::new(),
             wanted: HashSet::new(),
             textures: LruCache::new(NonZeroUsize::new(TEXTURE_LIMIT).unwrap()),
+            cell_px: 512,
             failed: HashSet::new(),
             pending: 0,
             ready: 0,
@@ -77,6 +92,8 @@ impl ThumbService {
         self.inflight.clear();
         self.wanted.clear();
         self.textures.clear();
+        self.textures
+            .resize(NonZeroUsize::new(TEXTURE_LIMIT).unwrap());
         self.failed.clear();
         self.pending = 0;
         self.ready = 0;
@@ -148,10 +165,33 @@ impl ThumbService {
                 }
                 match image {
                     Ok(image) => {
-                        let texture =
-                            ctx.load_texture(path.to_string_lossy(), image, TextureOptions::LINEAR);
-                        self.textures.put(path, texture);
-                        self.ready += 1;
+                        // Auf Anzeigegröße verkleinern: spart GPU-Speicher und
+                        // filtert sauberer als 512 px → 72 px ohne Mipmaps.
+                        let source_short = image.width().min(image.height()) as u32;
+                        let factor = shrink_factor(source_short, self.cell_px);
+                        let image = if factor > 1 {
+                            shrink(&image, factor)
+                        } else {
+                            image
+                        };
+                        let short = image.width().min(image.height()) as u32;
+                        let handle = ctx.load_texture(
+                            path.to_string_lossy(),
+                            image,
+                            TextureOptions::LINEAR
+                                .with_mipmap_mode(Some(egui::TextureFilter::Linear)),
+                        );
+                        if !self.textures.contains(&path) {
+                            self.ready += 1;
+                        }
+                        self.textures.put(
+                            path,
+                            Tex {
+                                handle,
+                                short,
+                                full: factor == 1,
+                            },
+                        );
                     }
                     Err(_) => {
                         self.failed.insert(path);
@@ -208,7 +248,24 @@ impl ThumbService {
     }
 
     pub fn texture(&mut self, path: &Path) -> Option<TextureHandle> {
-        self.textures.get(path).cloned()
+        self.textures.get(path).map(|tex| tex.handle.clone())
+    }
+
+    /// Zellengröße der Miniaturen in Punkten; vor dem Zeichnen je Frame setzen.
+    pub fn set_cell(&mut self, points: f32, pixels_per_point: f32) {
+        self.cell_px = (points * pixels_per_point).ceil().max(1.0) as u32;
+    }
+
+    /// Passt die vorhandene Textur nicht mehr zur Zelle (zu klein, oder so
+    /// groß, dass eine ganzzahlige Verkleinerung Speicher spart), wird sie
+    /// neu geladen; bis dahin bleibt die alte sichtbar.
+    fn needs_reload(&self, path: &Path) -> bool {
+        let Some(tex) = self.textures.peek(path) else {
+            return false;
+        };
+        let too_small = tex.short < self.cell_px && !tex.full;
+        let too_big = shrink_factor(tex.short, self.cell_px) >= 2;
+        too_small || too_big
     }
 
     pub fn view_is_loading(&self) -> bool {
@@ -223,6 +280,12 @@ impl ThumbService {
         let generation = self.generation;
         self.wanted
             .extend(photos.iter().map(|photo| photo.path.clone()));
+        // Der Cache muss alles Sichtbare halten, sonst verdrängen sich die
+        // Miniaturen gegenseitig und flimmern.
+        let capacity = (self.wanted.len() + TEXTURE_MARGIN).max(TEXTURE_LIMIT);
+        if capacity != self.textures.cap().get() {
+            self.textures.resize(NonZeroUsize::new(capacity).unwrap());
+        }
         let wanted = &self.wanted;
         self.jobs.retain_thumbs(|path| wanted.contains(path));
         let view_loading = self.view_loading.as_ref();
@@ -231,7 +294,10 @@ impl ThumbService {
         self.pending = self.inflight.len();
 
         for photo in photos {
-            if self.textures.contains(&photo.path) || self.failed.contains(&photo.path) {
+            if self.failed.contains(&photo.path) {
+                continue;
+            }
+            if self.textures.contains(&photo.path) && !self.needs_reload(&photo.path) {
                 continue;
             }
             if self.inflight.contains(&photo.path) {
@@ -268,8 +334,7 @@ impl ThumbService {
                 self.view = self
                     .textures
                     .peek(&photo.path)
-                    .cloned()
-                    .map(|tex| (photo.path.clone(), tex));
+                    .map(|tex| (photo.path.clone(), tex.handle.clone()));
             }
             self.view_loading = None;
             return;
@@ -287,8 +352,7 @@ impl ThumbService {
         self.view = self
             .textures
             .peek(&photo.path)
-            .cloned()
-            .map(|tex| (photo.path.clone(), tex));
+            .map(|tex| (photo.path.clone(), tex.handle.clone()));
         self.view_loading = Some(photo.path.clone());
         self.jobs.cancel_views();
         let target = if library::is_raw_path(&photo.path) {
@@ -445,6 +509,50 @@ fn around_window(photos: &[Photo], around: Option<usize>, window: usize) -> &[Ph
     let from = start.saturating_sub(window);
     let to = (start + window + 1).min(photos.len());
     &photos[from..to]
+}
+
+/// Kürzer als das wird nicht verkleinert: die Miniatur dient im Betrachter
+/// als Platzhalter, bis das große Bild da ist, und soll dort nicht matschen.
+const MIN_SHORT: u32 = 160;
+
+/// Ganzzahliger Verkleinerungsfaktor, der die Zelle noch abdeckt.
+fn shrink_factor(source_short: u32, cell_px: u32) -> usize {
+    let by_cell = source_short / cell_px.max(1);
+    let by_floor = source_short / MIN_SHORT;
+    by_cell.min(by_floor).max(1) as usize
+}
+
+/// Ganzzahlige Verkleinerung mit Kastenfilter: jedes Zielpixel ist der
+/// Mittelwert eines `factor`×`factor`-Blocks. Schnell genug für den UI-Thread
+/// (eine 512er-Miniatur in deutlich unter einer Millisekunde).
+fn shrink(image: &ColorImage, factor: usize) -> ColorImage {
+    let (w, h) = (image.width(), image.height());
+    let (ow, oh) = (w / factor, h / factor);
+    if ow == 0 || oh == 0 {
+        return image.clone();
+    }
+    let mut out = Vec::with_capacity(ow * oh);
+    let count = (factor * factor) as u32;
+    let src = &image.pixels;
+    for oy in 0..oh {
+        for ox in 0..ow {
+            let (mut r, mut g, mut b) = (0u32, 0u32, 0u32);
+            for dy in 0..factor {
+                let row = (oy * factor + dy) * w + ox * factor;
+                for px in &src[row..row + factor] {
+                    r += px.r() as u32;
+                    g += px.g() as u32;
+                    b += px.b() as u32;
+                }
+            }
+            out.push(Color32::from_rgb(
+                (r / count) as u8,
+                (g / count) as u8,
+                (b / count) as u8,
+            ));
+        }
+    }
+    ColorImage::new([ow, oh], out)
 }
 
 pub fn placeholder_color(time: f64, failed: bool) -> Color32 {

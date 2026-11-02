@@ -1,6 +1,6 @@
 [package]
 name = "lichtkasten"
-version = "1.2.0"
+version = "1.2.1"
 edition = "2024"
 description = "Folder-based photo and video viewer. The folder is the source of truth."
 license = "MIT OR Apache-2.0"

@@ -1486,6 +1486,8 @@ impl eframe::App for Lichtkasten {
 
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_io();
+        self.thumbs
+            .set_cell(self.prefs.thumb_size, ctx.pixels_per_point());
         let out = self.thumbs.poll(ctx);
         let capture_changed = self.apply_captures(out.captures) | self.take_meta(out.meta);
         self.apply_albums(out.albums);
