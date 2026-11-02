@@ -23,7 +23,7 @@ fn main() -> eframe::Result {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1440.0, 820.0])
             .with_min_inner_size([800.0, 520.0])
-            .with_title("Lichtkasten"),
+            .with_title(format!("Lichtkasten {}", env!("CARGO_PKG_VERSION"))),
         persist_window: true,
         ..Default::default()
     };

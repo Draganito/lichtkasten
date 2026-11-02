@@ -28,6 +28,7 @@ pub struct Photo {
     pub capture_known: bool,
     pub albums: Vec<String>,
     pub albums_known: bool,
+    pub covers: Vec<String>,
 }
 
 impl Photo {
@@ -148,8 +149,10 @@ pub fn photo_from_path(path: &Path) -> Option<Photo> {
 }
 
 fn photo_from_meta(path: PathBuf, name: String, mtime: u64, len: u64) -> Photo {
-    let albums = crate::albums::read_fast(&path).unwrap_or_default();
-    let albums_known = !albums.is_empty() || crate::albums::sidecar_path(&path).exists();
+    let tags = crate::albums::read_fast(&path).unwrap_or_default();
+    let albums_known = !tags.albums.is_empty()
+        || !tags.covers.is_empty()
+        || crate::albums::sidecar_path(&path).exists();
     Photo {
         path,
         name,
@@ -157,8 +160,9 @@ fn photo_from_meta(path: PathBuf, name: String, mtime: u64, len: u64) -> Photo {
         len,
         capture: None,
         capture_known: false,
-        albums,
+        albums: tags.albums,
         albums_known,
+        covers: tags.covers,
     }
 }
 

@@ -48,6 +48,7 @@ pub enum Work {
     AlbumWrite {
         path: PathBuf,
         albums: Vec<String>,
+        covers: Vec<String>,
     },
 }
 
@@ -72,6 +73,7 @@ pub enum Done {
         path: PathBuf,
         generation: u64,
         albums: Vec<String>,
+        covers: Vec<String>,
     },
 }
 
@@ -245,16 +247,31 @@ fn worker_loop(shared: Arc<Shared>, tx: Sender<Done>, ctx: Context, heavy_lane: 
                 path,
                 generation,
             },
-            Work::AlbumRead { path, generation } => Done::Albums {
-                albums: albums::read(&path),
+            Work::AlbumRead { path, generation } => {
+                let tags = albums::read_tags(&path);
+                Done::Albums {
+                    albums: tags.albums,
+                    covers: tags.covers,
+                    path,
+                    generation,
+                }
+            }
+            Work::AlbumWrite {
                 path,
-                generation,
-            },
-            Work::AlbumWrite { path, albums } => Done::Albums {
-                albums: albums::write(&path, &albums).unwrap_or(albums),
-                path,
-                generation: 0,
-            },
+                albums,
+                covers,
+            } => {
+                let tags = albums::write(&path, &albums, &covers).unwrap_or(albums::Tags {
+                    albums,
+                    covers,
+                });
+                Done::Albums {
+                    albums: tags.albums,
+                    covers: tags.covers,
+                    path,
+                    generation: 0,
+                }
+            }
         };
 
         if tx.send(done).is_err() {

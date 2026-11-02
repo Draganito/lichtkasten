@@ -36,7 +36,7 @@ pub struct ThumbService {
 pub struct PollOut {
     pub meta: Option<FileInfo>,
     pub captures: Vec<(PathBuf, Option<u64>)>,
-    pub albums: Vec<(PathBuf, Vec<String>)>,
+    pub albums: Vec<(PathBuf, Vec<String>, Vec<String>)>,
 }
 
 impl ThumbService {
@@ -179,10 +179,11 @@ impl ThumbService {
                 path,
                 generation,
                 albums,
+                covers,
             } => {
                 self.album_inflight.remove(&path);
                 if generation == 0 || generation == self.generation {
-                    out.albums.push((path, albums));
+                    out.albums.push((path, albums, covers));
                 }
             }
         }
@@ -342,9 +343,9 @@ impl ThumbService {
         }
     }
 
-    pub fn request_album_write(&mut self, path: PathBuf, albums: Vec<String>) {
+    pub fn request_album_write(&mut self, path: PathBuf, albums: Vec<String>, covers: Vec<String>) {
         self.album_inflight.insert(path.clone());
-        self.jobs.submit(Work::AlbumWrite { path, albums }, false);
+        self.jobs.submit(Work::AlbumWrite { path, albums, covers }, false);
     }
 
     pub fn view_texture(&self, path: &Path) -> Option<TextureHandle> {
