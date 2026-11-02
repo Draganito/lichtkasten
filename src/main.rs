@@ -13,6 +13,18 @@ mod video;
 
 use app::Lichtkasten;
 
+fn app_icon() -> egui::IconData {
+    let image = image::load_from_memory(include_bytes!("../packaging/lichtkasten.png"))
+        .expect("icon")
+        .into_rgba8();
+    let (width, height) = image.dimensions();
+    egui::IconData {
+        rgba: image.into_raw(),
+        width,
+        height,
+    }
+}
+
 fn main() -> eframe::Result {
     if std::env::args().any(|arg| arg == "--version" || arg == "-V") {
         println!("lichtkasten {}", env!("CARGO_PKG_VERSION"));
@@ -23,7 +35,9 @@ fn main() -> eframe::Result {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1440.0, 820.0])
             .with_min_inner_size([800.0, 520.0])
-            .with_title(format!("Lichtkasten {}", env!("CARGO_PKG_VERSION"))),
+            .with_title(format!("Lichtkasten {}", env!("CARGO_PKG_VERSION")))
+            .with_app_id("lichtkasten")
+            .with_icon(app_icon()),
         persist_window: true,
         ..Default::default()
     };

@@ -11,6 +11,7 @@
     <p>Miniaturen liegen versteckt im angeschauten Verzeichnis. Videos spielt GStreamer mit den Codecs des Systems.</p>
   </description>
   <launchable type="desktop-id">lichtkasten.desktop</launchable>
+  <icon type="stock">lichtkasten</icon>
   <url type="homepage">https://github.com/Draganito/lichtkasten</url>
   <provides>
     <binary>lichtkasten</binary>

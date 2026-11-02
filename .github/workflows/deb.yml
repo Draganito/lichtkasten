@@ -39,6 +39,8 @@ jobs:
           test -x "$tmp/usr/bin/lichtkasten"
           test -f "$tmp/usr/share/applications/lichtkasten.desktop"
           test -f "$tmp/usr/share/icons/hicolor/scalable/apps/lichtkasten.svg"
+          test -f "$tmp/usr/share/icons/hicolor/256x256/apps/lichtkasten.png"
+          test -f "$tmp/usr/share/pixmaps/lichtkasten.png"
           "$tmp/usr/bin/lichtkasten" --version
 
       - uses: actions/upload-artifact@v4

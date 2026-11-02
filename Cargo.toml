@@ -1,6 +1,6 @@
 [package]
 name = "lichtkasten"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2024"
 description = "Ordnerbasierter Foto- und Video-Betrachter. Der Ordner ist die Wahrheit."
 license = "MIT OR Apache-2.0"
@@ -14,6 +14,7 @@ categories = ["multimedia", "gui"]
 [package.metadata.deb]
 maintainer = "Dragan Bojovic"
 section = "graphics"
+maintainer-scripts = "packaging/debian"
 priority = "optional"
 extended-description = """\
 Lichtkasten liest den Ordner, den du öffnest. Keine Import-Datenbank. \
@@ -25,6 +26,8 @@ assets = [
     ["target/release/lichtkasten", "usr/bin/", "755"],
     ["packaging/lichtkasten.desktop", "usr/share/applications/", "644"],
     ["packaging/lichtkasten.svg", "usr/share/icons/hicolor/scalable/apps/", "644"],
+    ["packaging/lichtkasten.png", "usr/share/icons/hicolor/256x256/apps/", "644"],
+    ["packaging/lichtkasten.png", "usr/share/pixmaps/", "644"],
     ["packaging/lichtkasten.metainfo.xml", "usr/share/metainfo/", "644"],
 ]
 
