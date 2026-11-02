@@ -124,13 +124,7 @@ impl JobQueue {
                 false,
             );
         }
-        spawn_worker(
-            "lk-heavy".into(),
-            Arc::clone(&shared),
-            tx,
-            ctx,
-            true,
-        );
+        spawn_worker("lk-heavy".into(), Arc::clone(&shared), tx, ctx, true);
 
         (queue, JobJoin { rx })
     }
@@ -258,10 +252,8 @@ fn worker_loop(shared: Arc<Shared>, tx: Sender<Done>, ctx: Context, heavy_lane: 
                 albums,
                 covers,
             } => {
-                let tags = albums::write(&path, &albums, &covers).unwrap_or(albums::Tags {
-                    albums,
-                    covers,
-                });
+                let tags = albums::write(&path, &albums, &covers)
+                    .unwrap_or(albums::Tags { albums, covers });
                 Done::Albums {
                     albums: tags.albums,
                     covers: tags.covers,

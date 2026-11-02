@@ -8,8 +8,8 @@ use lru::LruCache;
 
 use crate::cache;
 use crate::decode::{FULL_VIEW_EDGE, VIEW_EDGE};
-use crate::library;
 use crate::jobs::{self, Done, JobJoin, JobQueue, Work};
+use crate::library;
 use crate::library::Photo;
 use crate::meta::FileInfo;
 
@@ -42,6 +42,8 @@ pub struct PollOut {
     pub meta: Option<FileInfo>,
     pub captures: Vec<(PathBuf, Option<u64>)>,
     pub albums: Vec<(PathBuf, Vec<String>, Vec<String>)>,
+    /// Dateien, deren XMP gerade geschrieben wurde (für den Suchindex).
+    pub written: Vec<PathBuf>,
 }
 
 impl ThumbService {
@@ -101,6 +103,7 @@ impl ThumbService {
             meta: None,
             captures: Vec::new(),
             albums: Vec::new(),
+            written: Vec::new(),
         };
         self.more_results = false;
         let mut textures = 0usize;
@@ -171,8 +174,7 @@ impl ThumbService {
                     let texture = ctx.load_texture(
                         format!("view:{}", path.display()),
                         image,
-                        TextureOptions::LINEAR
-                            .with_mipmap_mode(Some(egui::TextureFilter::Linear)),
+                        TextureOptions::LINEAR.with_mipmap_mode(Some(egui::TextureFilter::Linear)),
                     );
                     self.view = Some((path, texture));
                 }
@@ -195,6 +197,9 @@ impl ThumbService {
                 covers,
             } => {
                 self.album_inflight.remove(&path);
+                if generation == 0 {
+                    out.written.push(path.clone());
+                }
                 if generation == 0 || generation == self.generation {
                     out.albums.push((path, albums, covers));
                 }
@@ -255,7 +260,11 @@ impl ThumbService {
 
     pub fn request_view(&mut self, photo: &Photo, window_long_edge: u32) {
         if library::is_video_path(&photo.path) {
-            if self.view.as_ref().is_none_or(|(path, _)| path != &photo.path) {
+            if self
+                .view
+                .as_ref()
+                .is_none_or(|(path, _)| path != &photo.path)
+            {
                 self.view = self
                     .textures
                     .peek(&photo.path)
@@ -265,7 +274,11 @@ impl ThumbService {
             self.view_loading = None;
             return;
         }
-        if self.view.as_ref().is_some_and(|(path, _)| path == &photo.path) {
+        if self
+            .view
+            .as_ref()
+            .is_some_and(|(path, _)| path == &photo.path)
+        {
             return;
         }
         if self.view_loading.as_ref() == Some(&photo.path) {
@@ -305,10 +318,7 @@ impl ThumbService {
     pub fn request_captures(&mut self, photos: &[Photo], around: Option<usize>) {
         const MAX_INFLIGHT: usize = 4;
         const WINDOW: usize = 96;
-        if photos.is_empty()
-            || self.pending > 0
-            || self.capture_inflight.len() >= MAX_INFLIGHT
-        {
+        if photos.is_empty() || self.pending > 0 || self.capture_inflight.len() >= MAX_INFLIGHT {
             return;
         }
         for photo in around_window(photos, around, WINDOW) {
@@ -413,7 +423,14 @@ impl ThumbService {
 
     pub fn request_album_write(&mut self, path: PathBuf, albums: Vec<String>, covers: Vec<String>) {
         self.album_inflight.insert(path.clone());
-        self.jobs.submit(Work::AlbumWrite { path, albums, covers }, false);
+        self.jobs.submit(
+            Work::AlbumWrite {
+                path,
+                albums,
+                covers,
+            },
+            false,
+        );
     }
 
     pub fn view_texture(&self, path: &Path) -> Option<TextureHandle> {
@@ -421,7 +438,6 @@ impl ThumbService {
             .as_ref()
             .and_then(|(stored, tex)| (stored == path).then(|| tex.clone()))
     }
-
 }
 
 fn around_window(photos: &[Photo], around: Option<usize>, window: usize) -> &[Photo] {

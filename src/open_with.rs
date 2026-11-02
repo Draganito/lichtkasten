@@ -213,12 +213,7 @@ pub fn launch(app: &App, path: &Path) {
         .name("lk-open-app".into())
         .spawn(move || {
             if desktop.is_file()
-                && launched(
-                    Command::new("gio")
-                        .arg("launch")
-                        .arg(&desktop)
-                        .arg(&path),
-                )
+                && launched(Command::new("gio").arg("launch").arg(&desktop).arg(&path))
             {
                 return;
             }
@@ -390,7 +385,11 @@ fn data_dirs() -> Vec<PathBuf> {
         dirs.push(home.join(".local/share/flatpak/exports/share"));
     }
     if let Ok(xdg) = std::env::var("XDG_DATA_DIRS") {
-        dirs.extend(xdg.split(':').filter(|part| !part.is_empty()).map(PathBuf::from));
+        dirs.extend(
+            xdg.split(':')
+                .filter(|part| !part.is_empty())
+                .map(PathBuf::from),
+        );
     }
     dirs.push(PathBuf::from("/usr/local/share"));
     dirs.push(PathBuf::from("/usr/share"));
@@ -418,7 +417,13 @@ fn icon_candidates(icon: Option<&str>, id: &str) -> Vec<String> {
 fn load_icon(name: &str) -> Option<Icon> {
     let path = resolve_icon(name)?;
     let bytes = fs::read(&path).ok()?;
-    match path.extension().and_then(|ext| ext.to_str()).unwrap_or("").to_ascii_lowercase().as_str() {
+    match path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase()
+        .as_str()
+    {
         "svg" => decode_svg(&bytes),
         _ => decode_raster(&bytes),
     }

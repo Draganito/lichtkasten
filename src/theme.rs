@@ -9,6 +9,8 @@ pub const MUTED: Color32 = Color32::from_rgb(0x6E, 0x6A, 0x64);
 pub const CHIP: Color32 = Color32::from_rgb(0x2A, 0x27, 0x22);
 pub const HAIRLINE: Color32 = Color32::from_rgba_premultiplied(40, 36, 30, 40);
 pub const HAIRLINE_STRONG: Color32 = Color32::from_rgba_premultiplied(90, 84, 76, 90);
+/// Warnfarbe für unumkehrbare Aktionen (Papierkorb leeren).
+pub const DANGER: Color32 = Color32::from_rgb(0xD9, 0x6C, 0x5A);
 
 pub fn apply(ctx: &egui::Context) {
     let mut visuals = egui::Visuals::dark();
@@ -70,15 +72,16 @@ pub fn chrome(inner: Margin) -> Frame {
 }
 
 pub fn side() -> Frame {
-    Frame::NONE
-        .fill(BG)
-        .inner_margin(Margin::symmetric(16, 14))
+    Frame::NONE.fill(BG).inner_margin(Margin::symmetric(16, 14))
 }
 
 pub fn hairline_bottom(ui: &Ui) {
     let rect = ui.max_rect();
-    ui.painter()
-        .hline(rect.x_range(), rect.bottom() - 0.5, Stroke::new(1.0, HAIRLINE));
+    ui.painter().hline(
+        rect.x_range(),
+        rect.bottom() - 0.5,
+        Stroke::new(1.0, HAIRLINE),
+    );
 }
 
 pub fn hairline_top(ui: &Ui) {
@@ -88,9 +91,5 @@ pub fn hairline_top(ui: &Ui) {
 }
 
 pub fn section(ui: &mut Ui, title: &str) {
-    ui.label(
-        egui::RichText::new(title)
-            .small()
-            .color(MUTED),
-    );
+    ui.label(egui::RichText::new(title).small().color(MUTED));
 }

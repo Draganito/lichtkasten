@@ -1,6 +1,6 @@
 [package]
 name = "lichtkasten"
-version = "1.0.0"
+version = "1.1.0"
 edition = "2024"
 description = "Folder-based photo and video viewer. The folder is the source of truth."
 license = "MIT OR Apache-2.0"
@@ -44,5 +44,6 @@ quick-xml = "0.38"
 rawler = "0.8"
 resvg = { version = "0.45", default-features = false }
 rfd = "0.17"
+rusqlite = { version = "0.37", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 sha2 = "0.10"

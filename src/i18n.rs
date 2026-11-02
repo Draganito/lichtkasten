@@ -30,7 +30,8 @@ fn detect() -> Lang {
         };
         for part in value.split(':') {
             let tag = part.split('.').next().unwrap_or("").trim();
-            if tag.is_empty() || tag.eq_ignore_ascii_case("C") || tag.eq_ignore_ascii_case("POSIX") {
+            if tag.is_empty() || tag.eq_ignore_ascii_case("C") || tag.eq_ignore_ascii_case("POSIX")
+            {
                 continue;
             }
             let code = tag.split(['_', '-']).next().unwrap_or("");
@@ -125,6 +126,78 @@ pub fn media_count(stills: usize, videos: usize) -> String {
             (1, v) => format!("1 photo · {v} videos"),
             (s, v) => format!("{s} photos · {v} videos"),
         },
+    }
+}
+
+pub fn moved_to_trash(n: usize) -> String {
+    match lang() {
+        Lang::De if n == 1 => "1 Datei in den Papierkorb gelegt".into(),
+        Lang::De => format!("{n} Dateien in den Papierkorb gelegt"),
+        Lang::En if n == 1 => "1 file moved to trash".into(),
+        Lang::En => format!("{n} files moved to trash"),
+    }
+}
+
+pub fn trash_failed(path: &std::path::Path, err: impl std::fmt::Display) -> String {
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy())
+        .unwrap_or_default();
+    match lang() {
+        Lang::De => format!("„{name}“ konnte nicht in den Papierkorb: {err}"),
+        Lang::En => format!("Could not move “{name}” to trash: {err}"),
+    }
+}
+
+pub fn restore_failed(path: &std::path::Path, err: impl std::fmt::Display) -> String {
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy())
+        .unwrap_or_default();
+    match lang() {
+        Lang::De => format!("„{name}“ konnte nicht wiederhergestellt werden: {err}"),
+        Lang::En => format!("Could not restore “{name}”: {err}"),
+    }
+}
+
+pub fn empty_failed(n: usize) -> String {
+    match lang() {
+        Lang::De => format!("{n} Dateien konnten nicht gelöscht werden"),
+        Lang::En => format!("{n} files could not be deleted"),
+    }
+}
+
+pub fn trash_count(n: usize) -> String {
+    match lang() {
+        Lang::De if n == 1 => "1 Datei im Papierkorb".into(),
+        Lang::De => format!("{n} Dateien im Papierkorb"),
+        Lang::En if n == 1 => "1 file in trash".into(),
+        Lang::En => format!("{n} files in trash"),
+    }
+}
+
+pub fn confirm_empty(n: usize) -> String {
+    match lang() {
+        Lang::De if n == 1 => "1 Datei endgültig löschen?".into(),
+        Lang::De => format!("{n} Dateien endgültig löschen?"),
+        Lang::En if n == 1 => "Permanently delete 1 file?".into(),
+        Lang::En => format!("Permanently delete {n} files?"),
+    }
+}
+
+pub fn hits(n: usize) -> String {
+    match lang() {
+        Lang::De if n == 1 => "1 Treffer".into(),
+        Lang::De => format!("{n} Treffer"),
+        Lang::En if n == 1 => "1 match".into(),
+        Lang::En => format!("{n} matches"),
+    }
+}
+
+pub fn indexing(done: usize, total: usize) -> String {
+    match lang() {
+        Lang::De => format!("Index {done} / {total}"),
+        Lang::En => format!("Indexing {done} / {total}"),
     }
 }
 

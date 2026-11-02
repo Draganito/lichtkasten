@@ -3,6 +3,7 @@ mod app;
 mod cache;
 mod decode;
 mod i18n;
+mod index;
 mod jobs;
 mod library;
 mod meta;
@@ -11,6 +12,7 @@ mod orient;
 mod raw;
 mod theme;
 mod thumbs;
+mod trash;
 mod video;
 
 use app::Lichtkasten;

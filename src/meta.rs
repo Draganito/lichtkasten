@@ -31,13 +31,17 @@ pub fn read_file_info(photo: &Photo) -> FileInfo {
     info.overview
         .push((i18n::t("Datei", "File").into(), photo.name.clone()));
     if let Some(parent) = photo.path.parent() {
-        info.overview
-            .push((i18n::t("Ordner", "Folder").into(), parent.display().to_string()));
+        info.overview.push((
+            i18n::t("Ordner", "Folder").into(),
+            parent.display().to_string(),
+        ));
     }
     info.overview
         .push((i18n::t("Größe", "Size").into(), format_bytes(photo.len)));
-    info.overview
-        .push((i18n::t("Geändert", "Modified").into(), format_unix(photo.mtime)));
+    info.overview.push((
+        i18n::t("Geändert", "Modified").into(),
+        format_unix(photo.mtime),
+    ));
 
     if crate::library::is_video_path(&photo.path) {
         if let Some(probe) = crate::video::probe(&photo.path) {
@@ -62,11 +66,7 @@ pub fn read_file_info(photo: &Photo) -> FileInfo {
             .push((i18n::t("Pixel", "Pixels").into(), format!("{w} × {h}")));
     }
 
-    if let Some(ext) = photo
-        .path
-        .extension()
-        .and_then(|e| e.to_str())
-    {
+    if let Some(ext) = photo.path.extension().and_then(|e| e.to_str()) {
         let kind = if crate::library::is_raw_path(&photo.path) {
             format!("RAW ({})", ext.to_ascii_uppercase())
         } else if crate::library::is_video_path(&photo.path) {
@@ -74,7 +74,8 @@ pub fn read_file_info(photo: &Photo) -> FileInfo {
         } else {
             ext.to_ascii_uppercase()
         };
-        info.overview.push((i18n::t("Format", "Format").into(), kind));
+        info.overview
+            .push((i18n::t("Format", "Format").into(), kind));
     }
 
     if crate::library::is_video_path(&photo.path) {
@@ -101,6 +102,56 @@ pub fn read_file_info(photo: &Photo) -> FileInfo {
             .push((i18n::t("Alben", "Albums").into(), info.albums.join(", ")));
     }
     info
+}
+
+/// Textfelder für den Suchindex. Sprachneutral: nur Werte, keine Beschriftungen.
+/// Kein Video-Probe (zu teuer), kein Bildmaß.
+pub struct IndexFields {
+    pub captured: Option<u64>,
+    pub albums: String,
+    pub meta: String,
+}
+
+pub fn index_fields(path: &Path) -> IndexFields {
+    let tags = crate::albums::read_tags(path);
+    let albums = tags.albums.join(" ");
+    if crate::library::is_video_path(path) {
+        return IndexFields {
+            captured: None,
+            albums,
+            meta: String::new(),
+        };
+    }
+    let blob = read_head_and_tail(path).unwrap_or_default();
+    let exif = read_exif(path);
+    let captured = lookup(&exif, i18n::t("Aufnahmedatum", "Date taken"))
+        .or_else(|| lookup(&exif, i18n::t("Digitalisiert", "Digitized")))
+        .and_then(|s| parse_exif_datetime(&s));
+    let mut meta = String::new();
+    for (key, value) in exif
+        .iter()
+        .chain(extract_iptc(&blob).iter())
+        .chain(extract_xmp(&blob).iter())
+    {
+        // Zahlenwüsten (Rationale, Offsets) tragen nichts zur Suche bei.
+        if value.len() > 400
+            || value
+                .chars()
+                .all(|c| c.is_ascii_digit() || matches!(c, '/' | '.' | ' ' | ',' | '-' | '+' | ':'))
+        {
+            continue;
+        }
+        if key.starts_with("Unknown") {
+            continue;
+        }
+        meta.push_str(value);
+        meta.push('\n');
+    }
+    IndexFields {
+        captured,
+        albums,
+        meta,
+    }
 }
 
 pub fn read_capture_stamp(path: &Path) -> Option<u64> {
@@ -223,15 +274,16 @@ fn pretty_rational_list(inner: &str) -> Option<String> {
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'('
-            && let Some(end) = inner[i + 1..].find(')') {
-                let pair = &inner[i + 1..i + 1 + end];
-                let mut parts = pair.split(',');
-                let n: f64 = parts.next()?.trim().parse().ok()?;
-                let d: f64 = parts.next()?.trim().parse().ok()?;
-                values.push(format_rational(n, d));
-                i += end + 2;
-                continue;
-            }
+            && let Some(end) = inner[i + 1..].find(')')
+        {
+            let pair = &inner[i + 1..i + 1 + end];
+            let mut parts = pair.split(',');
+            let n: f64 = parts.next()?.trim().parse().ok()?;
+            let d: f64 = parts.next()?.trim().parse().ok()?;
+            values.push(format_rational(n, d));
+            i += end + 2;
+            continue;
+        }
         i += 1;
     }
     if values.is_empty() {
@@ -251,7 +303,10 @@ fn format_rational(n: f64, d: f64) -> String {
     } else if (v - v.round()).abs() < 0.0001 {
         format!("{}", v.round() as i64)
     } else {
-        format!("{v:.2}").trim_end_matches('0').trim_end_matches('.').to_string()
+        format!("{v:.2}")
+            .trim_end_matches('0')
+            .trim_end_matches('.')
+            .to_string()
     }
 }
 
@@ -303,16 +358,18 @@ fn fill_overview_from_metadata(info: &mut FileInfo) {
     ];
     for key in keys {
         if let Some(value) = lookup(&info.exif, key).or_else(|| lookup(&info.iptc, key))
-            && !info.overview.iter().any(|(k, _)| k == key) {
-                info.overview.push((key.into(), value));
-            }
+            && !info.overview.iter().any(|(k, _)| k == key)
+        {
+            info.overview.push((key.into(), value));
+        }
     }
     let title_key = i18n::t("Titel", "Title");
     let caption_key = i18n::t("Beschreibung", "Description");
     if let Some(title) = lookup(&info.iptc, title_key).or_else(|| lookup(&info.xmp, "dc:title")) {
         info.overview.insert(1, (title_key.into(), title));
     }
-    if let Some(caption) = lookup(&info.iptc, caption_key).or_else(|| lookup(&info.xmp, "dc:description"))
+    if let Some(caption) =
+        lookup(&info.iptc, caption_key).or_else(|| lookup(&info.xmp, "dc:description"))
         && !info.overview.iter().any(|(k, _)| k == caption_key)
     {
         info.overview.push((caption_key.into(), caption));
@@ -587,7 +644,10 @@ fn format_unix(secs: u64) -> String {
     let Some(time) = UNIX_EPOCH.checked_add(Duration::from_secs(secs)) else {
         return secs.to_string();
     };
-    let elapsed = time.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+    let elapsed = time
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
     let days = elapsed / 86400;
     let tod = elapsed % 86400;
     let (y, m, d) = civil_from_days(days as i64);

@@ -28,7 +28,8 @@ struct Api {
     _app: Library,
     _glib: Library,
     _gobject: Library,
-    gst_init_check: unsafe extern "C" fn(*mut c_int, *mut *mut *mut c_char, *mut *mut GError) -> i32,
+    gst_init_check:
+        unsafe extern "C" fn(*mut c_int, *mut *mut *mut c_char, *mut *mut GError) -> i32,
     gst_element_factory_make: unsafe extern "C" fn(*const c_char, *const c_char) -> *mut c_void,
     gst_element_set_state: unsafe extern "C" fn(*mut c_void, i32) -> i32,
     gst_element_get_state: unsafe extern "C" fn(*mut c_void, *mut i32, *mut i32, u64) -> i32,
@@ -39,8 +40,7 @@ struct Api {
     gst_object_ref_sink: unsafe extern "C" fn(*mut c_void) -> *mut c_void,
     gst_object_unref: unsafe extern "C" fn(*mut c_void),
     gst_bus_timed_pop_filtered: unsafe extern "C" fn(*mut c_void, u64, u32) -> *mut c_void,
-    gst_message_parse_error:
-        unsafe extern "C" fn(*mut c_void, *mut *mut GError, *mut *mut c_char),
+    gst_message_parse_error: unsafe extern "C" fn(*mut c_void, *mut *mut GError, *mut *mut c_char),
     gst_message_unref: unsafe extern "C" fn(*mut c_void),
     gst_util_set_object_arg: unsafe extern "C" fn(*mut c_void, *const c_char, *const c_char),
     gst_app_sink_try_pull_sample: unsafe extern "C" fn(*mut c_void, u64) -> *mut c_void,
@@ -52,7 +52,8 @@ struct Api {
     gst_buffer_unmap: unsafe extern "C" fn(*mut c_void, *mut GstMapInfo),
     gst_caps_get_structure: unsafe extern "C" fn(*mut c_void, u32) -> *mut c_void,
     gst_structure_get_int: unsafe extern "C" fn(*mut c_void, *const c_char, *mut i32) -> i32,
-    g_filename_to_uri: unsafe extern "C" fn(*const c_char, *const c_char, *mut *mut GError) -> *mut c_char,
+    g_filename_to_uri:
+        unsafe extern "C" fn(*const c_char, *const c_char, *mut *mut GError) -> *mut c_char,
     g_free: unsafe extern "C" fn(*mut c_void),
     g_error_free: unsafe extern "C" fn(*mut GError),
     g_value_init: unsafe extern "C" fn(*mut GValue, usize) -> *mut GValue,
@@ -98,13 +99,10 @@ fn api() -> Result<&'static Api, String> {
 
 fn load_api() -> Result<Api, String> {
     unsafe {
-        let gst = Library::new("libgstreamer-1.0.so.0")
-            .map_err(i18n::gstreamer_missing)?;
-        let app = Library::new("libgstapp-1.0.so.0")
-            .map_err(i18n::gstreamer_app_missing)?;
+        let gst = Library::new("libgstreamer-1.0.so.0").map_err(i18n::gstreamer_missing)?;
+        let app = Library::new("libgstapp-1.0.so.0").map_err(i18n::gstreamer_app_missing)?;
         let glib = Library::new("libglib-2.0.so.0").map_err(i18n::glib_missing)?;
-        let gobject =
-            Library::new("libgobject-2.0.so.0").map_err(i18n::gobject_missing)?;
+        let gobject = Library::new("libgobject-2.0.so.0").map_err(i18n::gobject_missing)?;
         let api = Api {
             gst_init_check: *gst.get(b"gst_init_check\0").map_err(|e| e.to_string())?,
             gst_element_factory_make: *gst
@@ -125,8 +123,12 @@ fn load_api() -> Result<Api, String> {
             gst_element_seek_simple: *gst
                 .get(b"gst_element_seek_simple\0")
                 .map_err(|e| e.to_string())?,
-            gst_element_get_bus: *gst.get(b"gst_element_get_bus\0").map_err(|e| e.to_string())?,
-            gst_object_ref_sink: *gst.get(b"gst_object_ref_sink\0").map_err(|e| e.to_string())?,
+            gst_element_get_bus: *gst
+                .get(b"gst_element_get_bus\0")
+                .map_err(|e| e.to_string())?,
+            gst_object_ref_sink: *gst
+                .get(b"gst_object_ref_sink\0")
+                .map_err(|e| e.to_string())?,
             gst_object_unref: *gst.get(b"gst_object_unref\0").map_err(|e| e.to_string())?,
             gst_bus_timed_pop_filtered: *gst
                 .get(b"gst_bus_timed_pop_filtered\0")
@@ -144,8 +146,12 @@ fn load_api() -> Result<Api, String> {
             gst_app_sink_try_pull_preroll: *app
                 .get(b"gst_app_sink_try_pull_preroll\0")
                 .map_err(|e| e.to_string())?,
-            gst_sample_get_buffer: *gst.get(b"gst_sample_get_buffer\0").map_err(|e| e.to_string())?,
-            gst_sample_get_caps: *gst.get(b"gst_sample_get_caps\0").map_err(|e| e.to_string())?,
+            gst_sample_get_buffer: *gst
+                .get(b"gst_sample_get_buffer\0")
+                .map_err(|e| e.to_string())?,
+            gst_sample_get_caps: *gst
+                .get(b"gst_sample_get_caps\0")
+                .map_err(|e| e.to_string())?,
             gst_sample_unref: *gst.get(b"gst_sample_unref\0").map_err(|e| e.to_string())?,
             gst_buffer_map: *gst.get(b"gst_buffer_map\0").map_err(|e| e.to_string())?,
             gst_buffer_unmap: *gst.get(b"gst_buffer_unmap\0").map_err(|e| e.to_string())?,
@@ -155,7 +161,9 @@ fn load_api() -> Result<Api, String> {
             gst_structure_get_int: *gst
                 .get(b"gst_structure_get_int\0")
                 .map_err(|e| e.to_string())?,
-            g_filename_to_uri: *glib.get(b"g_filename_to_uri\0").map_err(|e| e.to_string())?,
+            g_filename_to_uri: *glib
+                .get(b"g_filename_to_uri\0")
+                .map_err(|e| e.to_string())?,
             g_free: *glib.get(b"g_free\0").map_err(|e| e.to_string())?,
             g_error_free: *glib.get(b"g_error_free\0").map_err(|e| e.to_string())?,
             g_value_init: *gobject.get(b"g_value_init\0").map_err(|e| e.to_string())?,
@@ -199,16 +207,15 @@ unsafe fn take_error(api: &Api, err: *mut GError) -> Option<String> {
 }
 
 fn file_uri(api: &Api, path: &Path) -> Result<String, String> {
-    let abs = path
-        .canonicalize()
-        .unwrap_or_else(|_| path.to_path_buf());
+    let abs = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
     let c_path = CString::new(abs.to_string_lossy().as_bytes())
         .map_err(|_| i18n::t("Pfad enthält Nullbytes", "Path contains null bytes").to_string())?;
     unsafe {
         let mut err = ptr::null_mut();
         let raw = (api.g_filename_to_uri)(c_path.as_ptr(), ptr::null(), &mut err);
         if raw.is_null() {
-            return Err(take_error(api, err).unwrap_or_else(|| i18n::t("URI ungültig", "Invalid URI").into()));
+            return Err(take_error(api, err)
+                .unwrap_or_else(|| i18n::t("URI ungültig", "Invalid URI").into()));
         }
         let uri = CStr::from_ptr(raw).to_string_lossy().into_owned();
         (api.g_free)(raw as *mut c_void);
@@ -293,9 +300,7 @@ fn open_pipe(path: &Path, with_audio: bool) -> Result<Pipe, String> {
         if with_audio { c"true" } else { c"false" },
     );
     set_object_prop(api, playbin, c"video-sink", sink);
-    if !with_audio
-        && let Ok(fake) = make_element(api, c"fakesink", c"lk-audio")
-    {
+    if !with_audio && let Ok(fake) = make_element(api, c"fakesink", c"lk-audio") {
         set_object_prop(api, playbin, c"audio-sink", fake);
         unsafe {
             (api.gst_object_unref)(fake);
@@ -317,16 +322,11 @@ fn wait_state(api: &Api, playbin: *mut c_void, want: i32, timeout_s: u64) -> Res
         }
         let mut state = 0;
         let mut pending = 0;
-        let ret = (api.gst_element_get_state)(
-            playbin,
-            &mut state,
-            &mut pending,
-            timeout_s * GST_SECOND,
-        );
+        let ret =
+            (api.gst_element_get_state)(playbin, &mut state, &mut pending, timeout_s * GST_SECOND);
         if ret == GST_STATE_CHANGE_FAILURE {
-            return Err(bus_error(api, playbin).unwrap_or_else(|| {
-                i18n::t("Decoder fehlgeschlagen", "Decoder failed").into()
-            }));
+            return Err(bus_error(api, playbin)
+                .unwrap_or_else(|| i18n::t("Decoder fehlgeschlagen", "Decoder failed").into()));
         }
         Ok(())
     }
@@ -370,10 +370,9 @@ unsafe fn drain_bus(api: &Api, playbin: *mut c_void) -> Option<BusEvent> {
                 (api.g_free)(debug as *mut c_void);
             }
             (api.gst_object_unref)(bus);
-            return Some(BusEvent::Error(
-                take_error(api, err)
-                    .unwrap_or_else(|| i18n::t("Wiedergabe fehlgeschlagen", "Playback failed").into()),
-            ));
+            return Some(BusEvent::Error(take_error(api, err).unwrap_or_else(|| {
+                i18n::t("Wiedergabe fehlgeschlagen", "Playback failed").into()
+            })));
         }
         let eos = (api.gst_bus_timed_pop_filtered)(bus, 0, GST_MESSAGE_EOS);
         (api.gst_object_unref)(bus);
@@ -468,8 +467,12 @@ unsafe fn sample_to_frame(api: &Api, sample: *mut c_void) -> Option<Frame> {
 }
 
 fn frame_to_image(frame: &Frame, max_edge: u32) -> Result<ColorImage, String> {
-    let img = RgbaImage::from_raw(frame.width as u32, frame.height as u32, frame.pixels.clone())
-        .ok_or_else(|| i18n::t("Ungültiges Videobild", "Invalid video frame").to_string())?;
+    let img = RgbaImage::from_raw(
+        frame.width as u32,
+        frame.height as u32,
+        frame.pixels.clone(),
+    )
+    .ok_or_else(|| i18n::t("Ungültiges Videobild", "Invalid video frame").to_string())?;
     let long = frame.width.max(frame.height) as u32;
     let rgba = if long > max_edge {
         let scale = max_edge as f32 / long as f32;
@@ -657,7 +660,11 @@ impl Player {
                 (api.gst_util_set_object_arg)(
                     pipe.playbin,
                     c"mute".as_ptr(),
-                    if mute { c"true".as_ptr() } else { c"false".as_ptr() },
+                    if mute {
+                        c"true".as_ptr()
+                    } else {
+                        c"false".as_ptr()
+                    },
                 );
             }
             self.muted = mute;

@@ -3,19 +3,21 @@ use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
 
+use eframe::egui::text::{LayoutJob, TextWrapping};
 use eframe::egui::{
     self, Align2, Color32, CornerRadius, CursorIcon, FontId, Key, PointerButton, Pos2, Rect,
     RichText, Sense, Stroke, StrokeKind, Vec2,
 };
-use eframe::egui::text::{LayoutJob, TextWrapping};
 
 use crate::albums::{self, AlbumStore};
 use crate::i18n;
+use crate::index;
 use crate::library::{self, DirNode, Photo};
-use crate::open_with;
 use crate::meta::FileInfo;
+use crate::open_with;
 use crate::theme;
 use crate::thumbs::{self, ThumbService};
+use crate::trash;
 use crate::video;
 
 const THUMB_MIN: f32 = 72.0;
@@ -63,6 +65,7 @@ enum SourcePane {
     #[default]
     Folders,
     Albums,
+    Trash,
 }
 
 #[derive(Clone, Copy, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
@@ -86,7 +89,11 @@ type TaggedPhoto = (PathBuf, Vec<String>, Vec<String>, u64, u64);
 
 enum View {
     Grid,
-    Photo { index: usize, zoom: f32, offset: Vec2 },
+    Photo {
+        index: usize,
+        zoom: f32,
+        offset: Vec2,
+    },
 }
 
 struct FolderTree {
@@ -129,6 +136,26 @@ pub struct Lichtkasten {
     open_with: open_with::SharedCatalog,
     open_with_icons: HashMap<String, egui::TextureHandle>,
     video: Option<VideoSlot>,
+    /// Raster zeigt gerade den Papierkorb (statt Ordner oder Album).
+    in_trash: bool,
+    /// Anzahl im Papierkorb, sobald einmal gelesen.
+    trash_count: Option<usize>,
+    /// Bestätigungsdialog „Papierkorb leeren“ offen.
+    confirm_empty: bool,
+    /// Leeren läuft auf einem Worker.
+    emptying: bool,
+    /// Volltextindex der geöffneten Wurzel.
+    indexer: Option<index::Indexer>,
+    /// Text im Suchfeld.
+    search_text: String,
+    /// Letzte gesendete Anfrage; ältere Antworten werden verworfen.
+    search_seq: u64,
+    /// Raster zeigt Suchtreffer.
+    in_search: bool,
+    /// Eine Anfrage ist unterwegs.
+    searching: bool,
+    /// Suchfeld soll den Fokus bekommen (Strg+F).
+    focus_search: bool,
 }
 
 enum VideoSlot {
@@ -155,6 +182,24 @@ enum ScanMsg {
     Children {
         dir: PathBuf,
         children: Result<Vec<DirNode>, String>,
+    },
+    TrashPhotos(Vec<Photo>),
+    /// Ergebnis einer Verschiebung in den Papierkorb.
+    Trashed {
+        from: PathBuf,
+        result: Result<PathBuf, String>,
+    },
+    /// Ergebnis einer Wiederherstellung.
+    Restored {
+        from: PathBuf,
+        result: Result<PathBuf, String>,
+    },
+    TrashEmptied {
+        failed: Vec<PathBuf>,
+    },
+    SearchResults {
+        seq: u64,
+        photos: Vec<Photo>,
     },
     RestoreFolder(PathBuf),
     FolderMissing,
@@ -209,6 +254,16 @@ impl Lichtkasten {
             open_with: open_with::spawn_load(),
             open_with_icons: HashMap::new(),
             video: None,
+            in_trash: false,
+            trash_count: None,
+            confirm_empty: false,
+            emptying: false,
+            indexer: None,
+            search_text: String::new(),
+            search_seq: 0,
+            in_search: false,
+            searching: false,
+            focus_search: false,
         };
 
         if let Some(path) = app.prefs.last_folder.clone() {
@@ -245,7 +300,78 @@ impl Lichtkasten {
             expanded: vec![path.clone()],
         });
         self.load_children(path.clone());
+        self.search_text.clear();
+        self.in_search = false;
+        self.start_indexer(path.clone());
         self.open_dir(path);
+        self.trash_count = None;
+        self.count_trash();
+    }
+
+    fn start_indexer(&mut self, root: PathBuf) {
+        let tx = self.io_tx.clone();
+        let ctx = self.ctx.clone();
+        self.indexer = Some(index::Indexer::start(
+            root,
+            Box::new(move |event| {
+                match event {
+                    index::Event::Results { seq, photos } => {
+                        let _ = tx.send(ScanMsg::SearchResults { seq, photos });
+                    }
+                }
+                ctx.request_repaint();
+            }),
+        ));
+    }
+
+    /// Nach Datei-Änderungen (Papierkorb, Alben) den Index nachziehen.
+    fn rescan_index(&self) {
+        if let Some(indexer) = &self.indexer {
+            indexer.rescan();
+        }
+    }
+
+    /// Suchtext hat sich geändert: Anfrage schicken oder Suche verlassen.
+    fn search_changed(&mut self) {
+        let text = self.search_text.trim().to_string();
+        if text.is_empty() {
+            if self.in_search {
+                self.leave_search();
+            }
+            return;
+        }
+        if self.indexer.is_none() {
+            return;
+        }
+        if !self.in_search {
+            self.in_search = true;
+            self.current_album = None;
+            self.in_trash = false;
+            self.view = View::Grid;
+            self.video = None;
+            self.thumbs.reset_folder();
+            self.clear_photos();
+            self.clear_selection();
+            self.meta = None;
+            self.meta_loading = None;
+        }
+        self.search_seq += 1;
+        self.searching = true;
+        if let Some(indexer) = &self.indexer {
+            indexer.search(self.search_seq, text);
+        }
+    }
+
+    fn leave_search(&mut self) {
+        self.in_search = false;
+        self.searching = false;
+        self.search_text.clear();
+        if let Some(dir) = self.current_dir.clone() {
+            self.open_dir(dir);
+        } else {
+            self.clear_photos();
+            self.clear_selection();
+        }
     }
 
     fn set_all_photos(&mut self, photos: Vec<Photo>) {
@@ -302,6 +428,9 @@ impl Lichtkasten {
         self.video = None;
         self.prefs.source = SourcePane::Folders;
         self.current_album = None;
+        self.in_trash = false;
+        self.in_search = false;
+        self.search_text.clear();
         self.current_dir = Some(path.clone());
         self.prefs.last_folder = Some(path.clone());
         self.scanning = true;
@@ -325,7 +454,10 @@ impl Lichtkasten {
         let tx = self.io_tx.clone();
         thread::spawn(move || {
             let children = library::scan_subdirs(&path).map_err(|e| e.to_string());
-            let _ = tx.send(ScanMsg::Children { dir: path, children });
+            let _ = tx.send(ScanMsg::Children {
+                dir: path,
+                children,
+            });
         });
     }
 
@@ -337,7 +469,11 @@ impl Lichtkasten {
         for msg in messages {
             match msg {
                 ScanMsg::Photos { dir, photos } => {
-                    if self.current_album.is_some() || self.current_dir.as_ref() != Some(&dir) {
+                    if self.current_album.is_some()
+                        || self.in_trash
+                        || self.in_search
+                        || self.current_dir.as_ref() != Some(&dir)
+                    {
                         continue;
                     }
                     self.scanning = false;
@@ -384,6 +520,80 @@ impl Lichtkasten {
                 ScanMsg::Children { dir, children } => {
                     if let (Ok(children), Some(tree)) = (children, self.tree.as_mut()) {
                         tree.children.insert(dir, children);
+                    }
+                }
+                ScanMsg::TrashPhotos(photos) => {
+                    self.trash_count = Some(photos.len());
+                    if !self.in_trash {
+                        continue;
+                    }
+                    self.scanning = false;
+                    self.set_all_photos(photos);
+                    self.rebuild_photos();
+                    self.status = if self.photos.is_empty() {
+                        i18n::t("Papierkorb ist leer", "Trash is empty").into()
+                    } else {
+                        String::new()
+                    };
+                }
+                ScanMsg::Trashed { from, result } => match result {
+                    Ok(_) => {
+                        self.trash_count = Some(self.trash_count.unwrap_or(0) + 1);
+                        self.rescan_index();
+                    }
+                    Err(err) => {
+                        self.status = i18n::trash_failed(&from, err);
+                        // Datei liegt noch im Ordner: Ansicht neu lesen, damit sie wieder erscheint.
+                        if !self.in_trash
+                            && self.current_album.is_none()
+                            && let Some(dir) = self.current_dir.clone()
+                            && from.parent() == Some(dir.as_path())
+                        {
+                            self.scanning = true;
+                            self.spawn_scan(dir);
+                        }
+                    }
+                },
+                ScanMsg::Restored { from, result } => match result {
+                    Ok(_) => {
+                        self.trash_count = Some(self.trash_count.unwrap_or(1).saturating_sub(1));
+                        self.status = i18n::t("Wiederhergestellt", "Restored").into();
+                        self.rescan_index();
+                    }
+                    Err(err) => {
+                        self.status = i18n::restore_failed(&from, err);
+                        if self.in_trash {
+                            self.open_trash();
+                        }
+                    }
+                },
+                ScanMsg::SearchResults { seq, photos } => {
+                    if !self.in_search || seq != self.search_seq {
+                        continue;
+                    }
+                    self.searching = false;
+                    let keep = self.remember_path();
+                    let marked = self.remember_selection();
+                    self.set_all_photos(photos);
+                    self.rebuild_photos();
+                    self.restore_selection(keep, marked);
+                    self.status = if self.photos.is_empty() {
+                        i18n::t("Keine Treffer", "No matches").into()
+                    } else {
+                        i18n::hits(self.photos.len())
+                    };
+                }
+                ScanMsg::TrashEmptied { failed } => {
+                    self.emptying = false;
+                    self.rescan_index();
+                    if failed.is_empty() {
+                        self.trash_count = Some(0);
+                        self.status = i18n::t("Papierkorb geleert", "Trash emptied").into();
+                    } else {
+                        self.status = i18n::empty_failed(failed.len());
+                    }
+                    if self.in_trash {
+                        self.open_trash();
                     }
                 }
                 ScanMsg::RestoreFolder(path) => {
@@ -450,7 +660,11 @@ impl Lichtkasten {
         if !add {
             self.selected.clear();
         }
-        let (start, end) = if from <= index { (from, index) } else { (index, from) };
+        let (start, end) = if from <= index {
+            (from, index)
+        } else {
+            (index, from)
+        };
         for item in start..=end.min(self.photos.len().saturating_sub(1)) {
             self.selected.insert(item);
         }
@@ -504,7 +718,10 @@ impl Lichtkasten {
             photo.capture_known = true;
         }
         self.apply_photo_albums(&info.path, &info.albums);
-        if self.current_photo().is_some_and(|photo| photo.path == info.path) {
+        if self
+            .current_photo()
+            .is_some_and(|photo| photo.path == info.path)
+        {
             self.meta_loading = None;
             self.meta = Some(info);
         }
@@ -533,13 +750,17 @@ impl Lichtkasten {
         let desc = self.prefs.sort_desc;
         match self.prefs.sort {
             SortBy::Name => {
-                self.photos.sort_by_cached_key(|photo| photo.name.to_lowercase());
+                self.photos
+                    .sort_by_cached_key(|photo| photo.name.to_lowercase());
                 if desc {
                     self.photos.reverse();
                 }
             }
             SortBy::Captured => self.photos.sort_by(|a, b| {
-                let ord = a.sort_time().cmp(&b.sort_time()).then_with(|| a.name.cmp(&b.name));
+                let ord = a
+                    .sort_time()
+                    .cmp(&b.sort_time())
+                    .then_with(|| a.name.cmp(&b.name));
                 if desc { ord.reverse() } else { ord }
             }),
             SortBy::Modified => self.photos.sort_by(|a, b| {
@@ -638,7 +859,8 @@ impl Lichtkasten {
             self.prefs.sort_desc = !self.prefs.sort_desc;
         } else {
             self.prefs.sort = sort;
-            self.prefs.sort_desc = matches!(sort, SortBy::Captured | SortBy::Modified | SortBy::Size);
+            self.prefs.sort_desc =
+                matches!(sort, SortBy::Captured | SortBy::Modified | SortBy::Size);
         }
         let keep = self.remember_path();
         let marked = self.remember_selection();
@@ -654,7 +876,11 @@ impl Lichtkasten {
             }
             return;
         };
-        if self.meta.as_ref().is_some_and(|info| info.path == photo.path) {
+        if self
+            .meta
+            .as_ref()
+            .is_some_and(|info| info.path == photo.path)
+        {
             return;
         }
         if self.meta_loading.as_ref() == Some(&photo.path) {
@@ -669,7 +895,9 @@ impl Lichtkasten {
         let tagged: Vec<TaggedPhoto> = self
             .all_photos
             .iter()
-            .filter(|photo| photo.albums_known && (!photo.albums.is_empty() || !photo.covers.is_empty()))
+            .filter(|photo| {
+                photo.albums_known && (!photo.albums.is_empty() || !photo.covers.is_empty())
+            })
             .map(|photo| {
                 (
                     photo.path.clone(),
@@ -694,7 +922,11 @@ impl Lichtkasten {
         }
         for (path, albums, covers) in found {
             self.apply_photo_albums(&path, &albums);
-            if let Some((mtime, len)) = self.all_photo(&path).map(|photo| (photo.mtime, photo.len)) {
+            if trash::is_trashed(&path) {
+                continue;
+            }
+            if let Some((mtime, len)) = self.all_photo(&path).map(|photo| (photo.mtime, photo.len))
+            {
                 self.album_store.remember_cover(&path, &covers, mtime, len);
                 self.album_store.touch_cover_meta(&path, mtime, len);
             } else {
@@ -731,7 +963,10 @@ impl Lichtkasten {
             photo.albums = albums.to_vec();
             photo.albums_known = true;
         }
-        self.album_store.remember(path, albums);
+        // Dateien im Papierkorb gehören nicht in die Albenliste.
+        if !trash::is_trashed(path) {
+            self.album_store.remember(path, albums);
+        }
     }
 
     fn create_album(&mut self) {
@@ -757,7 +992,9 @@ impl Lichtkasten {
         }
         for path in &paths {
             self.album_store.add_path(name, path.clone());
-            let known = self.all_photo(path).map(|photo| (photo.mtime, photo.len, photo.albums.clone()));
+            let known = self
+                .all_photo(path)
+                .map(|photo| (photo.mtime, photo.len, photo.albums.clone()));
             if let Some((mtime, len, _)) = &known {
                 self.album_store.touch_cover_meta(path, *mtime, *len);
             }
@@ -814,7 +1051,9 @@ impl Lichtkasten {
                     self.album_store
                         .albums
                         .iter()
-                        .filter(|album| album.name != name && album.paths.iter().any(|entry| entry == &path))
+                        .filter(|album| {
+                            album.name != name && album.paths.iter().any(|entry| entry == &path)
+                        })
                         .map(|album| album.name.clone())
                         .collect()
                 });
@@ -854,9 +1093,9 @@ impl Lichtkasten {
         let Some(photo) = self.photos.get(index).cloned() else {
             return;
         };
-        let previous = self
-            .album_store
-            .set_cover(&name, photo.path.clone(), photo.mtime, photo.len);
+        let previous =
+            self.album_store
+                .set_cover(&name, photo.path.clone(), photo.mtime, photo.len);
         self.persist_album_tags(photo.path.clone(), photo.albums.clone());
         if let Some(old) = previous {
             let albums = self
@@ -875,9 +1114,192 @@ impl Lichtkasten {
         self.status = i18n::cover_set(&name);
     }
 
+    /// Wurzel des geöffneten Baums; Papierkörbe werden darunter gesucht.
+    fn trash_root(&self) -> Option<PathBuf> {
+        self.tree.as_ref().map(|tree| tree.root.clone())
+    }
+
+    fn open_trash(&mut self) {
+        let Some(root) = self.trash_root() else {
+            return;
+        };
+        self.prefs.source = SourcePane::Trash;
+        self.in_trash = true;
+        self.in_search = false;
+        self.search_text.clear();
+        self.current_album = None;
+        self.view = View::Grid;
+        self.video = None;
+        self.thumbs.reset_folder();
+        self.clear_photos();
+        self.clear_selection();
+        self.meta = None;
+        self.meta_loading = None;
+        self.scanning = true;
+        self.status = i18n::t("Lese Papierkorb …", "Reading trash…").into();
+        let tx = self.io_tx.clone();
+        let ctx = self.ctx.clone();
+        thread::spawn(move || {
+            let photos = trash::collect(&root);
+            let _ = tx.send(ScanMsg::TrashPhotos(photos));
+            ctx.request_repaint();
+        });
+    }
+
+    /// Zählt den Papierkorb im Hintergrund (für die Anzeige neben dem Icon).
+    fn count_trash(&self) {
+        let Some(root) = self.trash_root() else {
+            return;
+        };
+        let tx = self.io_tx.clone();
+        let ctx = self.ctx.clone();
+        thread::spawn(move || {
+            let photos = trash::collect(&root);
+            let _ = tx.send(ScanMsg::TrashPhotos(photos));
+            ctx.request_repaint();
+        });
+    }
+
+    /// Entfernt Pfade aus der Ansicht und wählt den Nachbarn.
+    fn remove_from_view(&mut self, paths: &[PathBuf]) {
+        if paths.is_empty() {
+            return;
+        }
+        let gone: HashSet<&PathBuf> = paths.iter().collect();
+        let anchor_index = match self.view {
+            View::Photo { index, .. } => Some(index),
+            View::Grid => self.focus,
+        };
+        let remaining = self
+            .all_photos
+            .iter()
+            .filter(|photo| !gone.contains(&photo.path))
+            .cloned()
+            .collect();
+        self.set_all_photos(remaining);
+        self.photos.retain(|photo| !gone.contains(&photo.path));
+        self.reindex_visible();
+        self.clear_selection();
+        self.meta = None;
+        self.meta_loading = None;
+        self.video = None;
+        if self.photos.is_empty() {
+            self.view = View::Grid;
+            return;
+        }
+        let next = anchor_index.unwrap_or(0).min(self.photos.len() - 1);
+        self.select_only(next);
+        if let View::Photo {
+            index,
+            zoom,
+            offset,
+        } = &mut self.view
+        {
+            *index = next;
+            *zoom = 1.0;
+            *offset = Vec2::ZERO;
+        }
+    }
+
+    /// Entf: markierte Bilder (oder das offene) in den Papierkorb.
+    fn trash_selected(&mut self) {
+        if self.in_trash {
+            return;
+        }
+        let paths = self.selected_paths();
+        if paths.is_empty() {
+            return;
+        }
+        for path in &paths {
+            self.album_store.forget_path(path);
+        }
+        self.remove_from_view(&paths);
+        self.status = i18n::moved_to_trash(paths.len());
+        let tx = self.io_tx.clone();
+        let ctx = self.ctx.clone();
+        thread::spawn(move || {
+            for from in paths {
+                let result = trash::put(&from);
+                let _ = tx.send(ScanMsg::Trashed { from, result });
+            }
+            ctx.request_repaint();
+        });
+    }
+
+    fn restore_selected(&mut self) {
+        if !self.in_trash {
+            return;
+        }
+        let paths = self.selected_paths();
+        self.restore_paths(paths);
+    }
+
+    fn restore_all(&mut self) {
+        if !self.in_trash {
+            return;
+        }
+        let paths: Vec<PathBuf> = self
+            .all_photos
+            .iter()
+            .map(|photo| photo.path.clone())
+            .collect();
+        self.restore_paths(paths);
+    }
+
+    fn restore_paths(&mut self, paths: Vec<PathBuf>) {
+        if paths.is_empty() {
+            return;
+        }
+        self.remove_from_view(&paths);
+        let tx = self.io_tx.clone();
+        let ctx = self.ctx.clone();
+        thread::spawn(move || {
+            for from in paths {
+                let result = trash::restore(&from);
+                let _ = tx.send(ScanMsg::Restored { from, result });
+            }
+            ctx.request_repaint();
+        });
+    }
+
+    /// Nach Bestätigung: alles im Papierkorb endgültig löschen.
+    fn empty_trash(&mut self) {
+        if !self.in_trash || self.emptying {
+            return;
+        }
+        let paths: Vec<PathBuf> = self
+            .all_photos
+            .iter()
+            .map(|photo| photo.path.clone())
+            .collect();
+        self.emptying = true;
+        self.clear_photos();
+        self.clear_selection();
+        self.view = View::Grid;
+        self.meta = None;
+        self.meta_loading = None;
+        self.video = None;
+        self.status = i18n::t("Lösche endgültig …", "Deleting permanently…").into();
+        let tx = self.io_tx.clone();
+        let ctx = self.ctx.clone();
+        thread::spawn(move || {
+            let mut failed = Vec::new();
+            for path in paths {
+                if trash::delete_forever(&path).is_err() {
+                    failed.push(path);
+                }
+            }
+            let _ = tx.send(ScanMsg::TrashEmptied { failed });
+            ctx.request_repaint();
+        });
+    }
+
     fn open_album(&mut self, name: String) {
         self.prefs.source = SourcePane::Albums;
         self.current_album = Some(name.clone());
+        self.in_trash = false;
+        self.in_search = false;
+        self.search_text.clear();
         self.view = View::Grid;
         self.video = None;
         self.clear_selection();
@@ -900,7 +1322,12 @@ impl Lichtkasten {
     }
 
     fn step_photo(&mut self, delta: isize) {
-        let View::Photo { index, zoom, offset } = &mut self.view else {
+        let View::Photo {
+            index,
+            zoom,
+            offset,
+        } = &mut self.view
+        else {
             return;
         };
         if self.photos.is_empty() {
@@ -942,7 +1369,9 @@ impl Lichtkasten {
                     None
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    Some(Err(i18n::t("Wiedergabe abgebrochen", "Playback stopped").into()))
+                    Some(Err(
+                        i18n::t("Wiedergabe abgebrochen", "Playback stopped").into()
+                    ))
                 }
             }
             .map(|result| (path.clone(), result))
@@ -988,13 +1417,28 @@ impl Lichtkasten {
     }
 
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
-        let (escape, backspace) = ctx.input(|i| (i.key_pressed(Key::Escape), i.key_pressed(Key::Backspace)));
+        if self.confirm_empty {
+            return;
+        }
+        if self.tree.is_some() && ctx.input(|i| i.modifiers.command && i.key_pressed(Key::F)) {
+            self.focus_search = true;
+            self.view = View::Grid;
+            self.video = None;
+            return;
+        }
+        if ctx.input(|i| i.key_pressed(Key::Delete)) {
+            self.trash_selected();
+        }
+        let (escape, backspace) =
+            ctx.input(|i| (i.key_pressed(Key::Escape), i.key_pressed(Key::Backspace)));
         if escape || backspace {
             if matches!(self.view, View::Photo { .. }) {
                 self.view = View::Grid;
                 self.video = None;
             } else if escape && !self.selected.is_empty() {
                 self.clear_selection();
+            } else if escape && self.in_search {
+                self.leave_search();
             }
         }
 
@@ -1013,8 +1457,9 @@ impl Lichtkasten {
                     if let Some(player) = self.video_player_mut() {
                         player.toggle();
                     }
-                } else if ctx.input(|i| i.key_pressed(Key::ArrowRight) || (!video && i.key_pressed(Key::Space)))
-                {
+                } else if ctx.input(|i| {
+                    i.key_pressed(Key::ArrowRight) || (!video && i.key_pressed(Key::Space))
+                }) {
                     self.step_photo(1);
                 }
                 if ctx.input(|i| i.key_pressed(Key::ArrowLeft)) {
@@ -1035,6 +1480,9 @@ impl eframe::App for Lichtkasten {
         let out = self.thumbs.poll(ctx);
         let capture_changed = self.apply_captures(out.captures) | self.take_meta(out.meta);
         self.apply_albums(out.albums);
+        if let Some(indexer) = &self.indexer {
+            indexer.refresh(out.written);
+        }
         if capture_changed && self.prefs.sort == SortBy::Captured {
             let keep = self.remember_path();
             self.sort_photos();
@@ -1070,7 +1518,7 @@ impl eframe::App for Lichtkasten {
         egui::Panel::top("title")
             .frame(theme::chrome(egui::Margin::symmetric(20, 10)))
             .show(ui, |ui| {
-                ui.horizontal(|ui| {
+                let row = ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 14.0;
                     if quiet_text(ui, i18n::t("Ordner öffnen", "Open Folder")).clicked() {
                         self.pick_folder();
@@ -1085,10 +1533,18 @@ impl eframe::App for Lichtkasten {
                         raw_chip(ui, self);
                         sort_chip(ui, self, SortBy::Size, i18n::t("Größe", "Size"));
                         sort_chip(ui, self, SortBy::Modified, i18n::t("Geändert", "Modified"));
-                        sort_chip(ui, self, SortBy::Captured, i18n::t("Aufnahme", "Date Taken"));
+                        sort_chip(
+                            ui,
+                            self,
+                            SortBy::Captured,
+                            i18n::t("Aufnahme", "Date Taken"),
+                        );
                         sort_chip(ui, self, SortBy::Name, i18n::t("Name", "Name"));
                     });
                 });
+                if self.tree.is_some() {
+                    draw_search_field(ui, self, row.response.rect);
+                }
                 ui.add_space(8.0);
                 theme::hairline_bottom(ui);
             });
@@ -1114,12 +1570,34 @@ impl eframe::App for Lichtkasten {
                                 .color(theme::MUTED),
                         );
                     }
+                    if let Some(indexer) = &self.indexer
+                        && indexer.is_running()
+                    {
+                        let (done, total) = indexer.counts();
+                        ui.separator();
+                        ui.label(RichText::new(i18n::indexing(done, total)).color(theme::MUTED));
+                        ctx.request_repaint_after(std::time::Duration::from_millis(250));
+                    }
                     if !self.status.is_empty() {
                         ui.separator();
                         ui.label(RichText::new(&self.status).color(theme::MUTED));
                     }
-                    if !self.selected.is_empty() || matches!(self.view, View::Photo { .. }) {
+                    let has_target =
+                        !self.selected.is_empty() || matches!(self.view, View::Photo { .. });
+                    if has_target && self.in_trash {
                         ui.separator();
+                        if ui.button(i18n::t("Wiederherstellen", "Restore")).clicked() {
+                            self.restore_selected();
+                        }
+                    } else if has_target {
+                        ui.separator();
+                        if ui
+                            .button(i18n::t("Papierkorb", "Trash"))
+                            .on_hover_text("Entf / Del")
+                            .clicked()
+                        {
+                            self.trash_selected();
+                        }
                         ui.menu_button(i18n::t("Zu Album", "Add to Album"), |ui| {
                             if self.album_store.albums.is_empty() {
                                 ui.label(
@@ -1141,7 +1619,9 @@ impl eframe::App for Lichtkasten {
                             }
                         });
                         if self.current_album.is_some()
-                            && ui.button(i18n::t("Aus Album", "Remove from Album")).clicked()
+                            && ui
+                                .button(i18n::t("Aus Album", "Remove from Album"))
+                                .clicked()
                         {
                             self.remove_selected_from_album();
                         }
@@ -1187,6 +1667,18 @@ impl eframe::App for Lichtkasten {
                     {
                         self.prefs.source = SourcePane::Albums;
                     }
+                    if self.tree.is_some()
+                        && icon_toggle(
+                            ui,
+                            self.prefs.source == SourcePane::Trash,
+                            paint_trash_icon,
+                            i18n::t("Papierkorb", "Trash"),
+                        )
+                        .clicked()
+                        && self.prefs.source != SourcePane::Trash
+                    {
+                        self.open_trash();
+                    }
                 });
                 ui.add_space(12.0);
                 match self.prefs.source {
@@ -1200,8 +1692,13 @@ impl eframe::App for Lichtkasten {
                             });
                     }
                     SourcePane::Albums => draw_albums(ui, self),
+                    SourcePane::Trash => draw_trash_pane(ui, self),
                 }
             });
+
+        if self.confirm_empty {
+            draw_confirm_empty(&ctx, self);
+        }
 
         egui::Panel::right("info")
             .resizable(true)
@@ -1217,7 +1714,11 @@ impl eframe::App for Lichtkasten {
             .frame(egui::Frame::NONE.fill(theme::VOID))
             .show(ui, |ui| match self.view {
                 View::Grid => draw_grid(ui, self),
-                View::Photo { index, zoom, offset } => {
+                View::Photo {
+                    index,
+                    zoom,
+                    offset,
+                } => {
                     draw_viewer(ui, self, index, zoom, offset);
                 }
             });
@@ -1317,7 +1818,11 @@ fn draw_info(ui: &mut egui::Ui, app: &mut Lichtkasten) {
 }
 
 fn draw_open_with_menu(ui: &mut egui::Ui, app: &mut Lichtkasten, path: &std::path::Path) {
-    ui.label(RichText::new(i18n::t("Öffnen mit", "Open with")).small().color(theme::MUTED));
+    ui.label(
+        RichText::new(i18n::t("Öffnen mit", "Open with"))
+            .small()
+            .color(theme::MUTED),
+    );
     let apps = app
         .open_with
         .lock()
@@ -1386,11 +1891,8 @@ fn icon_toggle(
     };
     paint(ui.painter(), rect, color);
     if selected {
-        ui.painter().hline(
-            rect.x_range(),
-            rect.bottom(),
-            Stroke::new(1.0, theme::INK),
-        );
+        ui.painter()
+            .hline(rect.x_range(), rect.bottom(), Stroke::new(1.0, theme::INK));
     }
     if response.hovered() {
         ui.ctx().set_cursor_icon(CursorIcon::Default);
@@ -1414,12 +1916,158 @@ fn paint_album_icon(painter: &egui::Painter, rect: Rect, color: Color32) {
     let p = |x: f32, y: f32| Pos2::new(rect.left() + x * w, rect.top() + y * h);
     let back = Rect::from_two_pos(p(0.22, 0.06), p(0.96, 0.66));
     let front = Rect::from_two_pos(p(0.04, 0.30), p(0.78, 0.92));
-    painter.rect_stroke(back, CornerRadius::same(2), Stroke::new(1.4, color), StrokeKind::Inside);
+    painter.rect_stroke(
+        back,
+        CornerRadius::same(2),
+        Stroke::new(1.4, color),
+        StrokeKind::Inside,
+    );
     painter.rect_filled(front, CornerRadius::same(2), color);
+}
+
+fn paint_trash_icon(painter: &egui::Painter, rect: Rect, color: Color32) {
+    let w = rect.width().max(1.0);
+    let h = rect.height().max(1.0);
+    let p = |x: f32, y: f32| Pos2::new(rect.left() + x * w, rect.top() + y * h);
+    // Deckel mit Griff, darunter der Korb mit zwei Rillen.
+    painter.rect_filled(
+        Rect::from_two_pos(p(0.38, 0.02), p(0.62, 0.12)),
+        CornerRadius::same(1),
+        color,
+    );
+    painter.rect_filled(
+        Rect::from_two_pos(p(0.14, 0.14), p(0.86, 0.26)),
+        CornerRadius::same(1),
+        color,
+    );
+    let body = Rect::from_two_pos(p(0.22, 0.34), p(0.78, 0.96));
+    painter.rect_filled(body, CornerRadius::same(2), color);
+    let groove = Stroke::new(1.2, theme::BG);
+    painter.vline(p(0.42, 0.0).x, body.y_range().shrink(3.0), groove);
+    painter.vline(p(0.58, 0.0).x, body.y_range().shrink(3.0), groove);
+}
+
+fn draw_trash_pane(ui: &mut egui::Ui, app: &mut Lichtkasten) {
+    let count = app.all_photos.len();
+    ui.label(
+        RichText::new(i18n::trash_count(count))
+            .small()
+            .color(theme::MUTED),
+    );
+    ui.add_space(10.0);
+    ui.label(
+        RichText::new(i18n::t(
+            "Entf legt Bilder hier ab. Sie bleiben auf dem Laufwerk, bis du den Papierkorb leerst.",
+            "Delete moves photos here. They stay on the drive until you empty the trash.",
+        ))
+        .small()
+        .color(theme::MUTED),
+    );
+    ui.add_space(14.0);
+    let has_selection = !app.selected.is_empty();
+    ui.add_enabled_ui(has_selection && !app.emptying, |ui| {
+        if ui
+            .button(i18n::t("Auswahl wiederherstellen", "Restore selection"))
+            .clicked()
+        {
+            app.restore_selected();
+        }
+    });
+    ui.add_space(6.0);
+    ui.add_enabled_ui(count > 0 && !app.emptying, |ui| {
+        if ui
+            .button(i18n::t("Alles wiederherstellen", "Restore all"))
+            .clicked()
+        {
+            app.restore_all();
+        }
+    });
+    ui.add_space(18.0);
+    ui.add_enabled_ui(count > 0 && !app.emptying, |ui| {
+        let danger = egui::Button::new(
+            RichText::new(i18n::t("Papierkorb leeren …", "Empty trash…")).color(theme::DANGER),
+        );
+        if ui.add(danger).clicked() {
+            app.confirm_empty = true;
+        }
+    });
+}
+
+fn draw_confirm_empty(ctx: &egui::Context, app: &mut Lichtkasten) {
+    let count = app.all_photos.len();
+    let modal = egui::Modal::new(egui::Id::unique("confirm-empty-trash")).show(ctx, |ui| {
+        ui.set_width(340.0);
+        ui.heading(i18n::confirm_empty(count));
+        ui.add_space(6.0);
+        ui.label(
+            RichText::new(i18n::t(
+                "Die Dateien werden vom Laufwerk entfernt. Das lässt sich nicht rückgängig machen.",
+                "The files will be removed from the drive. This cannot be undone.",
+            ))
+            .color(theme::MUTED),
+        );
+        ui.add_space(14.0);
+        let mut decision: Option<bool> = None;
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let delete = egui::Button::new(
+                RichText::new(i18n::t("Endgültig löschen", "Delete permanently"))
+                    .color(theme::DANGER),
+            );
+            if ui.add(delete).clicked() {
+                decision = Some(true);
+            }
+            if ui.button(i18n::t("Abbrechen", "Cancel")).clicked() {
+                decision = Some(false);
+            }
+        });
+        decision
+    });
+    let escape = ctx.input(|i| i.key_pressed(Key::Escape));
+    match modal.inner {
+        Some(true) => {
+            app.confirm_empty = false;
+            app.empty_trash();
+        }
+        Some(false) => app.confirm_empty = false,
+        None if modal.should_close() || escape => app.confirm_empty = false,
+        None => {}
+    }
 }
 
 fn quiet_text(ui: &mut egui::Ui, text: &str) -> egui::Response {
     quiet_toggle(ui, false, text)
+}
+
+/// Suchfeld mittig in der Titelzeile; sitzt über der bereits gezeichneten Zeile.
+fn draw_search_field(ui: &mut egui::Ui, app: &mut Lichtkasten, row: Rect) {
+    let width = (row.width() * 0.36).clamp(160.0, 340.0);
+    let rect = Rect::from_center_size(row.center(), egui::vec2(width, 28.0));
+    let mut field = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(
+        egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
+    ));
+    let response = field.add(
+        egui::TextEdit::singleline(&mut app.search_text)
+            .id_salt("search-field")
+            .desired_width(width)
+            .hint_text(i18n::t("Suchen  (Strg+F)", "Search  (Ctrl+F)")),
+    );
+    if app.focus_search {
+        app.focus_search = false;
+        response.request_focus();
+    }
+    if response.changed() {
+        app.search_changed();
+    }
+    if response.has_focus() && ui.input(|i| i.key_pressed(Key::Escape)) {
+        if app.in_search || !app.search_text.is_empty() {
+            app.leave_search();
+        }
+        response.surrender_focus();
+    }
+    if app.searching && app.in_search {
+        let spot = egui::pos2(rect.right() - 14.0, rect.center().y);
+        ui.painter().circle_filled(spot, 3.0, theme::MUTED);
+    }
 }
 
 fn quiet_toggle(ui: &mut egui::Ui, selected: bool, text: impl Into<String>) -> egui::Response {
@@ -1538,7 +2186,9 @@ fn draw_albums(ui: &mut egui::Ui, app: &mut Lichtkasten) {
         .collect();
     if albums.is_empty() && !app.naming_album {
         ui.label(
-            RichText::new(i18n::t("Noch keine Alben", "No albums yet")).small().color(theme::MUTED),
+            RichText::new(i18n::t("Noch keine Alben", "No albums yet"))
+                .small()
+                .color(theme::MUTED),
         );
         return;
     }
@@ -1552,10 +2202,8 @@ fn draw_albums(ui: &mut egui::Ui, app: &mut Lichtkasten) {
             ui.spacing_mut().item_spacing.y = 6.0;
             for (name, count, cover) in albums {
                 let selected = app.current_album.as_ref() == Some(&name);
-                let (rect, response) = ui.allocate_exact_size(
-                    Vec2::new(ui.available_width(), ROW),
-                    Sense::click(),
-                );
+                let (rect, response) =
+                    ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW), Sense::click());
                 let drop_over = app.dragging && response.contains_pointer();
                 if selected || response.hovered() || drop_over {
                     ui.painter().rect_filled(
@@ -1613,7 +2261,10 @@ fn draw_albums(ui: &mut egui::Ui, app: &mut Lichtkasten) {
                     app.open_album(name.clone());
                 }
                 response.context_menu(|ui| {
-                    if ui.button(i18n::t("Album löschen", "Delete album")).clicked() {
+                    if ui
+                        .button(i18n::t("Album löschen", "Delete album"))
+                        .clicked()
+                    {
                         app.delete_album(&name);
                         ui.close();
                     }
@@ -1679,7 +2330,14 @@ fn draw_dir_branch(
             .cloned()
             .unwrap_or_default();
         for child in children {
-            draw_dir_branch(ui, app, &child.path, &child.name, depth + 1, child.has_subdirs);
+            draw_dir_branch(
+                ui,
+                app,
+                &child.path,
+                &child.name,
+                depth + 1,
+                child.has_subdirs,
+            );
         }
     }
 }
@@ -1711,9 +2369,13 @@ fn draw_dir_row(
     has_subdirs: bool,
     expanded: bool,
 ) -> RowAction {
-    let selected = app.current_album.is_none() && app.current_dir.as_ref() == Some(path);
+    let selected = app.current_album.is_none()
+        && !app.in_trash
+        && !app.in_search
+        && app.current_dir.as_ref() == Some(path);
     let row_h = 26.0;
-    let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), row_h), Sense::click());
+    let (rect, resp) =
+        ui.allocate_exact_size(Vec2::new(ui.available_width(), row_h), Sense::click());
 
     let fill = if selected {
         theme::SURFACE
@@ -1723,17 +2385,13 @@ fn draw_dir_row(
         Color32::TRANSPARENT
     };
     if fill != Color32::TRANSPARENT {
-        ui.painter()
-            .rect_filled(rect, CornerRadius::same(6), fill);
+        ui.painter().rect_filled(rect, CornerRadius::same(6), fill);
     }
 
-    let text = if selected {
-        Color32::WHITE
-    } else {
-        theme::INK
-    };
+    let text = if selected { Color32::WHITE } else { theme::INK };
     let indent = 4.0 + depth as f32 * 14.0;
-    let chevron_rect = Rect::from_min_size(rect.min + Vec2::new(indent, 0.0), Vec2::new(18.0, row_h));
+    let chevron_rect =
+        Rect::from_min_size(rect.min + Vec2::new(indent, 0.0), Vec2::new(18.0, row_h));
     let mark = if !has_subdirs {
         ""
     } else if expanded {
@@ -1752,7 +2410,12 @@ fn draw_dir_row(
     }
     let text_left = chevron_rect.right() + 2.0;
     let text_max_w = (rect.right() - 8.0 - text_left).max(12.0);
-    let mut job = LayoutJob::simple(name.to_owned(), FontId::proportional(14.0), text, text_max_w);
+    let mut job = LayoutJob::simple(
+        name.to_owned(),
+        FontId::proportional(14.0),
+        text,
+        text_max_w,
+    );
     job.wrap = TextWrapping {
         max_width: text_max_w,
         max_rows: 1,
@@ -1792,10 +2455,23 @@ fn draw_dir_row(
 fn draw_grid(ui: &mut egui::Ui, app: &mut Lichtkasten) {
     if app.photos.is_empty() {
         ui.centered_and_justified(|ui| {
-            let text = if app.scanning {
+            let text = if app.emptying {
+                i18n::t("Lösche endgültig …", "Deleting permanently…")
+            } else if app.in_search && app.searching {
+                i18n::t("Suche …", "Searching…")
+            } else if app.in_search {
+                i18n::t("Keine Treffer", "No matches")
+            } else if app.scanning && app.in_trash {
+                i18n::t("Papierkorb wird gelesen…", "Reading trash…")
+            } else if app.scanning {
                 i18n::t("Ordner wird gelesen…", "Reading folder…")
             } else if app.tree.is_none() {
-                i18n::t("Ordner öffnen oder hierher ziehen", "Open a folder or drop one here")
+                i18n::t(
+                    "Ordner öffnen oder hierher ziehen",
+                    "Open a folder or drop one here",
+                )
+            } else if app.in_trash {
+                i18n::t("Papierkorb ist leer", "Trash is empty")
             } else if app.current_album.is_some() {
                 i18n::t("Keine Medien in diesem Album", "No media in this album")
             } else {
@@ -1821,6 +2497,8 @@ fn draw_grid(ui: &mut egui::Ui, app: &mut Lichtkasten) {
     let mut activate: Option<usize> = None;
     let mut select: Option<usize> = None;
     let mut cover: Option<usize> = None;
+    let mut restore: Option<usize> = None;
+    let mut to_trash: Option<usize> = None;
     let mut arrow: Option<isize> = None;
 
     if !ui.ctx().text_edit_focused() {
@@ -1855,9 +2533,14 @@ fn draw_grid(ui: &mut egui::Ui, app: &mut Lichtkasten) {
                         let failed = app.thumbs.failed(&app.photos[index].path);
                         let texture = app.thumbs.texture(&app.photos[index].path);
 
-                        let (rect, resp) = ui.allocate_exact_size(Vec2::splat(thumb), Sense::click_and_drag());
+                        let (rect, resp) =
+                            ui.allocate_exact_size(Vec2::splat(thumb), Sense::click_and_drag());
                         let painter = ui.painter();
-                        painter.rect_filled(rect, CornerRadius::same(2), thumbs::placeholder_color(time, failed));
+                        painter.rect_filled(
+                            rect,
+                            CornerRadius::same(2),
+                            thumbs::placeholder_color(time, failed),
+                        );
                         if let Some(texture) = texture {
                             painter.image(
                                 texture.id(),
@@ -1886,9 +2569,26 @@ fn draw_grid(ui: &mut egui::Ui, app: &mut Lichtkasten) {
                         let path = app.photos[index].path.clone();
                         let resp = resp.on_hover_text(name);
                         resp.context_menu(|ui| {
-                            if app.current_album.is_some() {
-                                if ui.button(i18n::t("Als Deckblatt", "Set as cover")).clicked() {
+                            if app.in_trash {
+                                if ui.button(i18n::t("Wiederherstellen", "Restore")).clicked() {
+                                    restore = Some(index);
+                                    ui.close();
+                                }
+                                ui.separator();
+                            } else {
+                                if app.current_album.is_some()
+                                    && ui
+                                        .button(i18n::t("Als Deckblatt", "Set as cover"))
+                                        .clicked()
+                                {
                                     cover = Some(index);
+                                    ui.close();
+                                }
+                                if ui
+                                    .button(i18n::t("In den Papierkorb", "Move to trash"))
+                                    .clicked()
+                                {
+                                    to_trash = Some(index);
                                     ui.close();
                                 }
                                 ui.separator();
@@ -1902,7 +2602,7 @@ fn draw_grid(ui: &mut egui::Ui, app: &mut Lichtkasten) {
                                 CursorIcon::PointingHand
                             });
                         }
-                        if resp.drag_started() {
+                        if resp.drag_started() && !app.in_trash {
                             select = Some(index);
                             app.dragging = true;
                             app.prefs.source = SourcePane::Albums;
@@ -1940,6 +2640,19 @@ fn draw_grid(ui: &mut egui::Ui, app: &mut Lichtkasten) {
         app.select_only(index);
         app.set_album_cover(index);
     }
+    // Rechtsklick auf ein nicht markiertes Bild wirkt nur auf dieses.
+    if let Some(index) = restore {
+        if !app.selected.contains(&index) {
+            app.select_only(index);
+        }
+        app.restore_selected();
+    }
+    if let Some(index) = to_trash {
+        if !app.selected.contains(&index) {
+            app.select_only(index);
+        }
+        app.trash_selected();
+    }
     if let Some(index) = activate {
         app.select_only(index);
         app.open_selected_photo();
@@ -1955,13 +2668,7 @@ fn draw_grid(ui: &mut egui::Ui, app: &mut Lichtkasten) {
     }
 }
 
-fn draw_viewer(
-    ui: &mut egui::Ui,
-    app: &mut Lichtkasten,
-    index: usize,
-    zoom: f32,
-    offset: Vec2,
-) {
+fn draw_viewer(ui: &mut egui::Ui, app: &mut Lichtkasten, index: usize, zoom: f32, offset: Vec2) {
     if index >= app.photos.len() {
         app.view = View::Grid;
         return;
@@ -2027,11 +2734,14 @@ fn draw_viewer(
             }
         });
 
-        let (stage, resp) = ui.allocate_exact_size(Vec2::new(stage_w, stage_h), Sense::click_and_drag());
+        let (stage, resp) =
+            ui.allocate_exact_size(Vec2::new(stage_w, stage_h), Sense::click_and_drag());
 
         if let Some(texture) = texture {
             let size = texture.size_vec2();
-            let fit = (stage.width() / size.x).min(stage.height() / size.y).max(0.0001);
+            let fit = (stage.width() / size.x)
+                .min(stage.height() / size.y)
+                .max(0.0001);
             zoom_100 = 1.0 / (fit * ppp);
             let shown = size * fit * new_zoom;
             let center = stage.center() + new_offset;
@@ -2088,14 +2798,38 @@ fn draw_viewer(
             );
         }
 
-        if is_video && resp.clicked()
-            && let Some(player) = app.video_player_mut() {
-                player.toggle();
-            }
+        if is_video
+            && resp.clicked()
+            && let Some(player) = app.video_player_mut()
+        {
+            player.toggle();
+        }
 
+        let mut viewer_action: Option<bool> = None; // true = Papierkorb, false = wiederherstellen
         resp.context_menu(|ui| {
+            let label = if app.in_trash {
+                i18n::t("Wiederherstellen", "Restore")
+            } else {
+                i18n::t("In den Papierkorb", "Move to trash")
+            };
+            if ui.button(label).clicked() {
+                viewer_action = Some(!app.in_trash);
+                ui.close();
+            }
+            ui.separator();
             draw_open_with_menu(ui, app, &photo.path);
         });
+        match viewer_action {
+            Some(true) => {
+                app.trash_selected();
+                return;
+            }
+            Some(false) => {
+                app.restore_selected();
+                return;
+            }
+            None => {}
+        }
 
         theme::chrome(egui::Margin::symmetric(0, 6)).show(ui, |ui| {
             theme::hairline_top(ui);
@@ -2242,4 +2976,3 @@ fn cover_uv(size: Vec2) -> Rect {
         Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0))
     }
 }
-

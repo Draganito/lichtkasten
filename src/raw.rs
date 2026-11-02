@@ -29,18 +29,21 @@ fn load_embedded_jpeg(path: &Path, target: u32) -> Option<DynamicImage> {
     let mut best: Option<(u32, u32, usize, usize)> = None;
     let mut i = 0;
     while i + 3 < data.len() {
-        if data[i] == 0xFF && data[i + 1] == 0xD8 && data[i + 2] == 0xFF
-            && let Some((w, h, end)) = parse_jpeg(&data[i..]) {
-                let pixels = w.saturating_mul(h);
-                let better = best
-                    .map(|(bw, bh, _, _)| pixels > bw.saturating_mul(bh))
-                    .unwrap_or(true);
-                if better {
-                    best = Some((w, h, i, end));
-                }
-                i += end.max(2);
-                continue;
+        if data[i] == 0xFF
+            && data[i + 1] == 0xD8
+            && data[i + 2] == 0xFF
+            && let Some((w, h, end)) = parse_jpeg(&data[i..])
+        {
+            let pixels = w.saturating_mul(h);
+            let better = best
+                .map(|(bw, bh, _, _)| pixels > bw.saturating_mul(bh))
+                .unwrap_or(true);
+            if better {
+                best = Some((w, h, i, end));
             }
+            i += end.max(2);
+            continue;
+        }
         i += 1;
     }
     let (w, h, start, end) = best?;

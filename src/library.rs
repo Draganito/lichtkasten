@@ -2,20 +2,18 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-pub const IMAGE_EXTENSIONS: &[&str] = &[
-    "jpg", "jpeg", "png", "tif", "tiff", "webp", "gif", "bmp",
-];
+pub const IMAGE_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png", "tif", "tiff", "webp", "gif", "bmp"];
 
 pub const RAW_EXTENSIONS: &[&str] = &[
-    "3fr", "arw", "cr2", "cr3", "crw", "dcr", "dng", "erf", "fff", "iiq", "kdc",
-    "mdc", "mef", "mos", "mrw", "nef", "nrw", "orf", "ori", "pef", "raf", "raw",
-    "rw2", "rwl", "sr2", "srf", "srw", "x3f",
+    "3fr", "arw", "cr2", "cr3", "crw", "dcr", "dng", "erf", "fff", "iiq", "kdc", "mdc", "mef",
+    "mos", "mrw", "nef", "nrw", "orf", "ori", "pef", "raf", "raw", "rw2", "rwl", "sr2", "srf",
+    "srw", "x3f",
 ];
 
 pub const VIDEO_EXTENSIONS: &[&str] = &[
-    "3g2", "3gp", "asf", "avi", "divx", "dv", "f4v", "flv", "m2t", "m2ts", "m4v",
-    "mkv", "mod", "mov", "mp4", "mpe", "mpeg", "mpg", "mts", "mxf", "ogv", "qt",
-    "rm", "rmvb", "tod", "ts", "vob", "webm", "wmv",
+    "3g2", "3gp", "asf", "avi", "divx", "dv", "f4v", "flv", "m2t", "m2ts", "m4v", "mkv", "mod",
+    "mov", "mp4", "mpe", "mpeg", "mpg", "mts", "mxf", "ogv", "qt", "rm", "rmvb", "tod", "ts",
+    "vob", "webm", "wmv",
 ];
 
 #[derive(Clone, Debug)]
@@ -70,6 +68,11 @@ pub fn scan_photos(dir: &Path) -> std::io::Result<Vec<Photo>> {
     if crate::cache::is_app_dir(dir) {
         return Ok(Vec::new());
     }
+    scan_photos_unchecked(dir)
+}
+
+/// Wie `scan_photos`, liest aber auch innerhalb von `.lichtkasten` (Papierkorb).
+pub fn scan_photos_unchecked(dir: &Path) -> std::io::Result<Vec<Photo>> {
     let mut photos = Vec::new();
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
@@ -131,7 +134,10 @@ fn dir_has_subdirs(path: &Path) -> bool {
             return true;
         }
         if child.file_type().ok().is_some_and(|kind| kind.is_dir())
-            && !child.file_name().to_str().is_some_and(|name| name.starts_with('.'))
+            && !child
+                .file_name()
+                .to_str()
+                .is_some_and(|name| name.starts_with('.'))
         {
             return true;
         }

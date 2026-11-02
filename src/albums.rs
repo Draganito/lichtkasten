@@ -86,6 +86,15 @@ impl AlbumStore {
         before != album.paths.len()
     }
 
+    /// Entfernt einen Pfad aus allen Alben (RAM). Die XMP-Tags bleiben in der
+    /// Datei; beim nächsten Scan des Ursprungsordners kommt er zurück.
+    pub fn forget_path(&mut self, path: &Path) {
+        let names: Vec<String> = self.albums.iter().map(|album| album.name.clone()).collect();
+        for name in names {
+            self.drop_path(&name, path);
+        }
+    }
+
     pub fn remember(&mut self, path: &Path, albums: &[String]) {
         for album in &mut self.albums {
             if albums.iter().any(|name| name == &album.name) {
@@ -133,7 +142,13 @@ impl AlbumStore {
         }
     }
 
-    pub fn set_cover(&mut self, name: &str, path: PathBuf, mtime: u64, len: u64) -> Option<PathBuf> {
+    pub fn set_cover(
+        &mut self,
+        name: &str,
+        path: PathBuf,
+        mtime: u64,
+        len: u64,
+    ) -> Option<PathBuf> {
         let album = self.albums.iter_mut().find(|album| album.name == name)?;
         if !album.paths.iter().any(|entry| entry == &path) {
             album.paths.insert(0, path.clone());
@@ -323,11 +338,17 @@ fn bag_xml(tag: &str, names: &[String]) -> String {
     for name in names {
         items.push_str(&format!("<rdf:li>{}</rdf:li>", escape(name)));
     }
-    format!("<lichtkasten:{tag} xmlns:lichtkasten=\"{NS}\"><rdf:Bag>{items}</rdf:Bag></lichtkasten:{tag}>")
+    format!(
+        "<lichtkasten:{tag} xmlns:lichtkasten=\"{NS}\"><rdf:Bag>{items}</rdf:Bag></lichtkasten:{tag}>"
+    )
 }
 
 fn tags_xml(tags: &Tags) -> String {
-    format!("{}{}", bag_xml("albums", &tags.albums), bag_xml("covers", &tags.covers))
+    format!(
+        "{}{}",
+        bag_xml("albums", &tags.albums),
+        bag_xml("covers", &tags.covers)
+    )
 }
 
 fn new_xmp(tags: &Tags) -> String {
@@ -371,8 +392,16 @@ fn replace_bag(body: String, tag: &str, names: &[String]) -> String {
         return out;
     }
     new_xmp(&Tags {
-        albums: if tag == "albums" { names.to_vec() } else { Vec::new() },
-        covers: if tag == "covers" { names.to_vec() } else { Vec::new() },
+        albums: if tag == "albums" {
+            names.to_vec()
+        } else {
+            Vec::new()
+        },
+        covers: if tag == "covers" {
+            names.to_vec()
+        } else {
+            Vec::new()
+        },
     })
 }
 
@@ -413,7 +442,9 @@ fn parse_bag(xml: &str, tag: &str) -> Vec<String> {
         let after = &search[li..];
         let Some(gt) = after.find('>') else { break };
         let content = &after[gt + 1..];
-        let Some(close_li) = find_ci(content, "</rdf:li>") else { break };
+        let Some(close_li) = find_ci(content, "</rdf:li>") else {
+            break;
+        };
         let name = normalize_name(&unescape(&content[..close_li]));
         if !name.is_empty() && !names.contains(&name) {
             names.push(name);
@@ -544,8 +575,7 @@ fn find_bytes(hay: &[u8], needle: &[u8]) -> Option<usize> {
 }
 
 fn find_ci(hay: &str, needle: &str) -> Option<usize> {
-    hay.to_ascii_lowercase()
-        .find(&needle.to_ascii_lowercase())
+    hay.to_ascii_lowercase().find(&needle.to_ascii_lowercase())
 }
 
 fn escape(text: &str) -> String {

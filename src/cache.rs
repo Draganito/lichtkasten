@@ -4,12 +4,15 @@ use std::path::{Path, PathBuf};
 use sha2::{Digest, Sha256};
 
 const VERSION: &str = "fit-v3-folder";
-const DIR_NAME: &str = ".lichtkasten";
+pub const DIR_NAME: &str = ".lichtkasten";
 const THUMBS: &str = "miniaturen";
 
 /// Miniaturen liegen im angeschauten Ordner, nicht auf dem Rechner.
+/// Dateien im Papierkorb nutzen weiter den Cache ihres Ursprungsordners
+/// (Name, mtime und Länge bleiben beim Rename gleich).
 pub fn dir_for(photo: &Path) -> PathBuf {
-    let folder = photo.parent().unwrap_or(photo);
+    let folder = crate::trash::origin_folder(photo)
+        .unwrap_or_else(|| photo.parent().unwrap_or(photo).to_path_buf());
     folder.join(DIR_NAME).join(THUMBS)
 }
 
