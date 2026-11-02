@@ -14,7 +14,7 @@ Folder-based photo and video viewer for Linux. The folder is the source of truth
 - Video playback through the system's GStreamer — whatever your system decodes, the app plays.
 - Right-click → *Open with* lists every installed program that handles the file type, with its icon. No default is enforced.
 - EXIF / IPTC / XMP panel, sort by name, date taken, modified, size.
-- Full-text search (Ctrl+F) over file name, folder, albums and metadata (camera, lens, keywords, captions, dates). A small SQLite FTS5 index lives next to the files (`<root>/.lichtkasten/index.sqlite`) and is rebuilt from the files whenever they change; search already works while indexing runs.
+- Full-text search (Ctrl+F) over file name, folder, albums and metadata (camera, lens, keywords, captions, dates). One small SQLite FTS5 index per collection lives next to the files (`<collection>/.lichtkasten/index.sqlite`). Open a subfolder directly and the app walks up to the collection's index (same drive only), so it is complete immediately; nested older indexes are merged and removed. Moved files are recognised without re-reading. Search already works while indexing runs, and closing the app at any point leaves a valid index that resumes next time.
 - Trash: Del marks photos for deletion and moves them to `<folder>/.lichtkasten/papierkorb/` (sidecars travel along). Restore single files or everything, or empty the trash after a confirmation.
 - The GUI thread never blocks: decoding, scanning, metadata and album reads run on worker threads with a per-frame apply budget.
 - Interface follows the system language: English (US) and German.
@@ -26,7 +26,7 @@ Folder-based photo and video viewer for Linux. The folder is the source of truth
 | Thumbnail size, last folder, RAW toggle, sort order, window geometry | `~/.local/share/lichtkasten/app.ron` |
 | Thumbnails | `<folder>/.lichtkasten/miniaturen/*.jpg` |
 | Album membership and covers | XMP in the image (JPEG) or `<file>.xmp` sidecar (RAW, TIFF, PNG, video, …) |
-| Search index (rebuildable cache) | `<root>/.lichtkasten/index.sqlite`; in-memory only if the root is read-only |
+| Search index (rebuildable cache) | `<collection>/.lichtkasten/index.sqlite` — the topmost opened folder on that drive; in-memory only if the folder is read-only |
 | Trash | `<folder>/.lichtkasten/papierkorb/` |
 
 ## Install (Debian / Ubuntu)

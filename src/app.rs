@@ -309,6 +309,8 @@ impl Lichtkasten {
     }
 
     fn start_indexer(&mut self, root: PathBuf) {
+        // Alter Indexer: Stopp-Signal, nicht warten; er schließt seinen Block selbst ab.
+        self.indexer = None;
         let tx = self.io_tx.clone();
         let ctx = self.ctx.clone();
         self.indexer = Some(index::Indexer::start(
@@ -1473,6 +1475,13 @@ impl Lichtkasten {
 impl eframe::App for Lichtkasten {
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         eframe::set_value(storage, eframe::APP_KEY, &self.prefs);
+    }
+
+    fn on_exit(&mut self) {
+        // Laufenden Indexblock fertig schreiben, aber das Beenden nicht aufhalten.
+        if let Some(indexer) = self.indexer.take() {
+            indexer.shutdown(std::time::Duration::from_secs(2));
+        }
     }
 
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
