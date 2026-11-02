@@ -74,12 +74,12 @@ pub fn scan_photos(dir: &Path) -> std::io::Result<Vec<Photo>> {
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
-        if !path.is_file() || !is_media_path(&path) {
+        if !is_media_path(&path) {
             continue;
         }
         let meta = match entry.metadata() {
-            Ok(meta) => meta,
-            Err(_) => continue,
+            Ok(meta) if meta.is_file() => meta,
+            _ => continue,
         };
         let mtime = meta
             .modified()
@@ -101,7 +101,7 @@ pub fn scan_subdirs(dir: &Path) -> std::io::Result<Vec<DirNode>> {
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
-        if !path.is_dir() {
+        if !entry.file_type().ok().is_some_and(|kind| kind.is_dir()) {
             continue;
         }
         let name = match path.file_name() {
@@ -111,15 +111,7 @@ pub fn scan_subdirs(dir: &Path) -> std::io::Result<Vec<DirNode>> {
         if name.starts_with('.') {
             continue;
         }
-        let has_subdirs = fs::read_dir(&path).ok().is_some_and(|iter| {
-            iter.flatten().any(|child| {
-                child.path().is_dir()
-                    && child
-                        .file_name()
-                        .to_str()
-                        .is_none_or(|n| !n.starts_with('.'))
-            })
-        });
+        let has_subdirs = dir_has_subdirs(&path);
         dirs.push(DirNode {
             path,
             name,
@@ -130,11 +122,31 @@ pub fn scan_subdirs(dir: &Path) -> std::io::Result<Vec<DirNode>> {
     Ok(dirs)
 }
 
+fn dir_has_subdirs(path: &Path) -> bool {
+    let Ok(iter) = fs::read_dir(path) else {
+        return false;
+    };
+    for (seen, child) in iter.flatten().enumerate() {
+        if seen >= 80 {
+            return true;
+        }
+        if child.file_type().ok().is_some_and(|kind| kind.is_dir())
+            && !child.file_name().to_str().is_some_and(|name| name.starts_with('.'))
+        {
+            return true;
+        }
+    }
+    false
+}
+
 pub fn photo_from_path(path: &Path) -> Option<Photo> {
-    if !path.is_file() || !is_media_path(path) {
+    if !is_media_path(path) {
         return None;
     }
     let meta = path.metadata().ok()?;
+    if !meta.is_file() {
+        return None;
+    }
     let mtime = meta
         .modified()
         .ok()
@@ -149,10 +161,6 @@ pub fn photo_from_path(path: &Path) -> Option<Photo> {
 }
 
 fn photo_from_meta(path: PathBuf, name: String, mtime: u64, len: u64) -> Photo {
-    let tags = crate::albums::read_fast(&path).unwrap_or_default();
-    let albums_known = !tags.albums.is_empty()
-        || !tags.covers.is_empty()
-        || crate::albums::sidecar_path(&path).exists();
     Photo {
         path,
         name,
@@ -160,9 +168,9 @@ fn photo_from_meta(path: PathBuf, name: String, mtime: u64, len: u64) -> Photo {
         len,
         capture: None,
         capture_known: false,
-        albums: tags.albums,
-        albums_known,
-        covers: tags.covers,
+        albums: Vec::new(),
+        albums_known: false,
+        covers: Vec::new(),
     }
 }
 

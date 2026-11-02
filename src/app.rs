@@ -470,24 +470,26 @@ impl Lichtkasten {
 
     fn sort_photos(&mut self) {
         let desc = self.prefs.sort_desc;
-        self.photos.sort_by(|a, b| {
-            let ord = match self.prefs.sort {
-                SortBy::Name => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
-                SortBy::Captured => a
-                    .sort_time()
-                    .cmp(&b.sort_time())
-                    .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase())),
-                SortBy::Modified => a
-                    .mtime
-                    .cmp(&b.mtime)
-                    .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase())),
-                SortBy::Size => a
-                    .len
-                    .cmp(&b.len)
-                    .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase())),
-            };
-            if desc { ord.reverse() } else { ord }
-        });
+        match self.prefs.sort {
+            SortBy::Name => {
+                self.photos.sort_by_cached_key(|photo| photo.name.to_lowercase());
+                if desc {
+                    self.photos.reverse();
+                }
+            }
+            SortBy::Captured => self.photos.sort_by(|a, b| {
+                let ord = a.sort_time().cmp(&b.sort_time()).then_with(|| a.name.cmp(&b.name));
+                if desc { ord.reverse() } else { ord }
+            }),
+            SortBy::Modified => self.photos.sort_by(|a, b| {
+                let ord = a.mtime.cmp(&b.mtime).then_with(|| a.name.cmp(&b.name));
+                if desc { ord.reverse() } else { ord }
+            }),
+            SortBy::Size => self.photos.sort_by(|a, b| {
+                let ord = a.len.cmp(&b.len).then_with(|| a.name.cmp(&b.name));
+                if desc { ord.reverse() } else { ord }
+            }),
+        }
     }
 
     fn remember_path(&self) -> Option<PathBuf> {
@@ -773,9 +775,11 @@ impl Lichtkasten {
                         .collect()
                 })
                 .unwrap_or_else(|| {
-                    albums::read(&path)
-                        .into_iter()
-                        .filter(|have| have != name)
+                    self.album_store
+                        .albums
+                        .iter()
+                        .filter(|album| album.name != name && album.paths.iter().any(|entry| entry == &path))
+                        .map(|album| album.name.clone())
                         .collect()
                 });
             self.persist_album_tags(path, albums);
@@ -825,7 +829,14 @@ impl Lichtkasten {
                 .iter()
                 .find(|item| item.path == old)
                 .map(|item| item.albums.clone())
-                .unwrap_or_else(|| albums::read(&old));
+                .unwrap_or_else(|| {
+                    self.album_store
+                        .albums
+                        .iter()
+                        .filter(|album| album.paths.iter().any(|path| path == &old))
+                        .map(|album| album.name.clone())
+                        .collect()
+                });
             self.persist_album_tags(old, albums);
         }
         self.status = format!("Deckblatt für „{name}“");
@@ -972,7 +983,7 @@ impl eframe::App for Lichtkasten {
             self.pick_folder();
         }
         if self.picking_folder {
-            ctx.request_repaint();
+            ctx.request_repaint_after(std::time::Duration::from_millis(120));
         }
     }
 
@@ -1677,7 +1688,8 @@ fn draw_grid(ui: &mut egui::Ui, app: &mut Lichtkasten) {
 
     ui.spacing_mut().item_spacing = Vec2::new(GAP, GAP);
 
-    let mut visible: Vec<Photo> = Vec::new();
+    let mut vis_start = usize::MAX;
+    let mut vis_end = 0usize;
     let time = ui.input(|i| i.time);
     let mut activate: Option<usize> = None;
     let mut select: Option<usize> = None;
@@ -1706,11 +1718,13 @@ fn draw_grid(ui: &mut egui::Ui, app: &mut Lichtkasten) {
                         if index >= app.photos.len() {
                             break;
                         }
-                        let photo = app.photos[index].clone();
-                        visible.push(photo.clone());
+                        vis_start = vis_start.min(index);
+                        vis_end = vis_end.max(index + 1);
                         let selected = app.selected.contains(&index);
-                        let failed = app.thumbs.failed(&photo.path);
-                        let texture = app.thumbs.texture(&photo.path);
+                        let is_video = library::is_video_path(&app.photos[index].path);
+                        let name = app.photos[index].name.clone();
+                        let failed = app.thumbs.failed(&app.photos[index].path);
+                        let texture = app.thumbs.texture(&app.photos[index].path);
 
                         let (rect, resp) = ui.allocate_exact_size(Vec2::splat(thumb), Sense::click_and_drag());
                         let painter = ui.painter();
@@ -1731,7 +1745,7 @@ fn draw_grid(ui: &mut egui::Ui, app: &mut Lichtkasten) {
                                 StrokeKind::Outside,
                             );
                         }
-                        if library::is_video_path(&photo.path) {
+                        if is_video {
                             painter.text(
                                 rect.left_bottom() + Vec2::new(8.0, -7.0),
                                 Align2::LEFT_BOTTOM,
@@ -1740,7 +1754,7 @@ fn draw_grid(ui: &mut egui::Ui, app: &mut Lichtkasten) {
                                 Color32::WHITE,
                             );
                         }
-                        let resp = resp.on_hover_text(&photo.name);
+                        let resp = resp.on_hover_text(name);
                         if app.current_album.is_some() {
                             resp.clone().context_menu(|ui| {
                                 if ui.button("Als Deckblatt").clicked() {
@@ -1772,17 +1786,10 @@ fn draw_grid(ui: &mut egui::Ui, app: &mut Lichtkasten) {
             }
         });
 
-    if !visible.is_empty() {
-        // Prefetch one extra row around the visible window.
-        if let Some(first) = visible.first()
-            && let Some(start) = app.photos.iter().position(|p| p.path == first.path)
-        {
-            let from = start.saturating_sub(cols);
-            let to = (start + visible.len() + cols).min(app.photos.len());
-            app.thumbs.request_visible(&app.photos[from..to]);
-        } else {
-            app.thumbs.request_visible(&visible);
-        }
+    if vis_start < vis_end {
+        let from = vis_start.saturating_sub(cols);
+        let to = (vis_end + cols).min(app.photos.len());
+        app.thumbs.request_visible(&app.photos[from..to]);
     }
 
     let mods = ui.input(|i| i.modifiers);
@@ -1988,15 +1995,15 @@ fn draw_filmstrip(ui: &mut egui::Ui, app: &mut Lichtkasten, current: usize) {
                 ui.add_space(12.0);
                 let mut jump = None;
                 for index in start..end {
-                    let photo = app.photos[index].clone();
+                    let path = &app.photos[index].path;
                     let (rect, resp) = ui.allocate_exact_size(Vec2::splat(cell), Sense::click());
-                    let failed = app.thumbs.failed(&photo.path);
+                    let failed = app.thumbs.failed(path);
                     ui.painter().rect_filled(
                         rect,
                         CornerRadius::same(3),
                         thumbs::placeholder_color(0.0, failed),
                     );
-                    if let Some(texture) = app.thumbs.texture(&photo.path) {
+                    if let Some(texture) = app.thumbs.texture(path) {
                         ui.painter().image(
                             texture.id(),
                             rect,

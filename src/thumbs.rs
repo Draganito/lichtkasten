@@ -7,7 +7,7 @@ use egui::{Color32, Context, TextureHandle, TextureOptions};
 use lru::LruCache;
 
 use crate::cache;
-use crate::decode::{self, FULL_VIEW_EDGE, VIEW_EDGE};
+use crate::decode::{FULL_VIEW_EDGE, VIEW_EDGE};
 use crate::library;
 use crate::jobs::{self, Done, JobJoin, JobQueue, Work};
 use crate::library::Photo;
@@ -30,6 +30,8 @@ pub struct ThumbService {
     pub more_results: bool,
     capture_inflight: HashSet<PathBuf>,
     album_inflight: HashSet<PathBuf>,
+    album_cursor: usize,
+    capture_cursor: usize,
     inbox: VecDeque<Done>,
 }
 
@@ -57,6 +59,8 @@ impl ThumbService {
             more_results: false,
             capture_inflight: HashSet::new(),
             album_inflight: HashSet::new(),
+            album_cursor: 0,
+            capture_cursor: 0,
             inbox: VecDeque::new(),
         }
     }
@@ -74,6 +78,8 @@ impl ThumbService {
         self.more_results = false;
         self.capture_inflight.clear();
         self.album_inflight.clear();
+        self.album_cursor = 0;
+        self.capture_cursor = 0;
         self.inbox.clear();
         while self.results.rx.try_recv().is_ok() {}
     }
@@ -126,10 +132,10 @@ impl ThumbService {
                 image,
             } => {
                 self.inflight.remove(&path);
+                self.pending = self.inflight.len();
                 if generation != self.generation {
                     return;
                 }
-                self.pending = self.pending.saturating_sub(1);
                 match image {
                     Ok(image) => {
                         let texture =
@@ -208,6 +214,7 @@ impl ThumbService {
         self.inflight.retain(|path| {
             visible.contains(path.as_path()) || self.view_loading.as_ref() == Some(path)
         });
+        self.pending = self.inflight.len();
 
         for photo in photos {
             if self.textures.contains(&photo.path) || self.failed.contains(&photo.path) {
@@ -221,8 +228,7 @@ impl ThumbService {
                 continue;
             }
             let cache_dir = cache::dir_for(&photo.path);
-            let cache = cache::file(&cache_dir, &photo.path, photo.mtime, photo.len, decode::THUMB_EDGE);
-            let heavy = !cache.exists() && jobs::is_heavy_file(&photo.path, photo.len);
+            let heavy = jobs::is_heavy_file(&photo.path, photo.len);
             self.jobs.submit(
                 Work::Thumb {
                     path: photo.path.clone(),
@@ -234,8 +240,8 @@ impl ThumbService {
                 heavy,
             );
             self.inflight.insert(photo.path.clone());
-            self.pending += 1;
         }
+        self.pending = self.inflight.len();
     }
 
     pub fn request_view(&mut self, photo: &Photo, window_long_edge: u32) {
@@ -289,57 +295,110 @@ impl ThumbService {
 
     pub fn request_captures(&mut self, photos: &[Photo], around: Option<usize>) {
         const MAX_INFLIGHT: usize = 4;
+        const WINDOW: usize = 96;
         if photos.is_empty()
             || self.pending > 0
             || self.capture_inflight.len() >= MAX_INFLIGHT
         {
             return;
         }
-        let start = around.unwrap_or(0).min(photos.len() - 1);
-        for offset in 0..photos.len() {
+        for photo in around_window(photos, around, WINDOW) {
             if self.capture_inflight.len() >= MAX_INFLIGHT {
                 break;
             }
-            let photo = &photos[(start + offset) % photos.len()];
-            if photo.capture_known
-                || jobs::skip_capture(&photo.path, photo.len)
-                || self.capture_inflight.contains(&photo.path)
-            {
-                continue;
-            }
-            self.capture_inflight.insert(photo.path.clone());
-            self.jobs.submit(
-                Work::Capture {
-                    path: photo.path.clone(),
-                    generation: self.generation,
-                },
-                jobs::is_heavy_file(&photo.path, photo.len),
-            );
+            self.submit_capture(photo);
         }
+        self.drain_unknown(photos, MAX_INFLIGHT, true);
     }
 
     pub fn request_album_reads(&mut self, photos: &[Photo], around: Option<usize>) {
         const MAX_INFLIGHT: usize = 6;
+        const WINDOW: usize = 96;
         if photos.is_empty() || self.album_inflight.len() >= MAX_INFLIGHT {
             return;
         }
-        let start = around.unwrap_or(0).min(photos.len() - 1);
-        for offset in 0..photos.len() {
+        for photo in around_window(photos, around, WINDOW) {
             if self.album_inflight.len() >= MAX_INFLIGHT {
                 break;
             }
-            let photo = &photos[(start + offset) % photos.len()];
-            if photo.albums_known || self.album_inflight.contains(&photo.path) {
-                continue;
+            self.submit_album_read(photo);
+        }
+        self.drain_unknown(photos, MAX_INFLIGHT, false);
+    }
+
+    fn submit_capture(&mut self, photo: &Photo) {
+        if photo.capture_known
+            || jobs::skip_capture(&photo.path, photo.len)
+            || self.capture_inflight.contains(&photo.path)
+        {
+            return;
+        }
+        self.capture_inflight.insert(photo.path.clone());
+        self.jobs.submit(
+            Work::Capture {
+                path: photo.path.clone(),
+                generation: self.generation,
+            },
+            jobs::is_heavy_file(&photo.path, photo.len),
+        );
+    }
+
+    fn submit_album_read(&mut self, photo: &Photo) {
+        if photo.albums_known || self.album_inflight.contains(&photo.path) {
+            return;
+        }
+        self.album_inflight.insert(photo.path.clone());
+        self.jobs.submit(
+            Work::AlbumRead {
+                path: photo.path.clone(),
+                generation: self.generation,
+            },
+            false,
+        );
+    }
+
+    fn drain_unknown(&mut self, photos: &[Photo], max_inflight: usize, captures: bool) {
+        if photos.is_empty() {
+            return;
+        }
+        let inflight = if captures {
+            self.capture_inflight.len()
+        } else {
+            self.album_inflight.len()
+        };
+        if inflight >= max_inflight {
+            return;
+        }
+        let cursor = if captures {
+            self.capture_cursor
+        } else {
+            self.album_cursor
+        }
+        .min(photos.len() - 1);
+        let mut checked = 0usize;
+        let mut next = cursor;
+        while checked < 256 && checked < photos.len() {
+            let full = if captures {
+                self.capture_inflight.len() >= max_inflight
+            } else {
+                self.album_inflight.len() >= max_inflight
+            };
+            if full {
+                break;
             }
-            self.album_inflight.insert(photo.path.clone());
-            self.jobs.submit(
-                Work::AlbumRead {
-                    path: photo.path.clone(),
-                    generation: self.generation,
-                },
-                false,
-            );
+            let photo = &photos[next];
+            if captures {
+                self.submit_capture(photo);
+            } else {
+                self.submit_album_read(photo);
+            }
+            next = (next + 1) % photos.len();
+            checked += 1;
+        }
+        if captures {
+            self.capture_cursor = next;
+        } else {
+            self.album_cursor = next;
         }
     }
 
@@ -354,6 +413,13 @@ impl ThumbService {
             .and_then(|(stored, tex)| (stored == path).then(|| tex.clone()))
     }
 
+}
+
+fn around_window(photos: &[Photo], around: Option<usize>, window: usize) -> &[Photo] {
+    let start = around.unwrap_or(0).min(photos.len().saturating_sub(1));
+    let from = start.saturating_sub(window);
+    let to = (start + window + 1).min(photos.len());
+    &photos[from..to]
 }
 
 pub fn placeholder_color(time: f64, failed: bool) -> Color32 {

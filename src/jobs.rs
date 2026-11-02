@@ -162,7 +162,7 @@ impl JobQueue {
     }
 
     pub fn retain_thumbs(&self, keep: impl Fn(&PathBuf) -> bool) {
-        if let Ok(mut queue) = self.shared.queue.try_lock() {
+        if let Ok(mut queue) = self.shared.queue.lock() {
             queue.retain(|item| match &item.work {
                 Work::Thumb { path, .. } => keep(path),
                 Work::View { .. }
