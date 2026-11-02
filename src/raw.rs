@@ -29,8 +29,8 @@ fn load_embedded_jpeg(path: &Path, target: u32) -> Option<DynamicImage> {
     let mut best: Option<(u32, u32, usize, usize)> = None;
     let mut i = 0;
     while i + 3 < data.len() {
-        if data[i] == 0xFF && data[i + 1] == 0xD8 && data[i + 2] == 0xFF {
-            if let Some((w, h, end)) = parse_jpeg(&data[i..]) {
+        if data[i] == 0xFF && data[i + 1] == 0xD8 && data[i + 2] == 0xFF
+            && let Some((w, h, end)) = parse_jpeg(&data[i..]) {
                 let pixels = w.saturating_mul(h);
                 let better = best
                     .map(|(bw, bh, _, _)| pixels > bw.saturating_mul(bh))
@@ -41,7 +41,6 @@ fn load_embedded_jpeg(path: &Path, target: u32) -> Option<DynamicImage> {
                 i += end.max(2);
                 continue;
             }
-        }
         i += 1;
     }
     let (w, h, start, end) = best?;
@@ -102,7 +101,7 @@ fn parse_jpeg(data: &[u8]) -> Option<(u32, u32, usize)> {
         if len < 2 || i + len > data.len() {
             return None;
         }
-        if matches!(marker, 0xC0 | 0xC1 | 0xC2 | 0xC3) && len >= 7 {
+        if matches!(marker, 0xC0..=0xC3) && len >= 7 {
             height = u16::from_be_bytes([data[i + 3], data[i + 4]]) as u32;
             width = u16::from_be_bytes([data[i + 5], data[i + 6]]) as u32;
         }

@@ -9,6 +9,7 @@ use image::{RgbaImage, imageops::FilterType};
 use libloading::Library;
 
 use crate::decode::THUMB_EDGE;
+use crate::i18n;
 
 const GST_STATE_NULL: i32 = 1;
 const GST_STATE_PAUSED: i32 = 3;
@@ -98,13 +99,12 @@ fn api() -> Result<&'static Api, String> {
 fn load_api() -> Result<Api, String> {
     unsafe {
         let gst = Library::new("libgstreamer-1.0.so.0")
-            .map_err(|e| format!("GStreamer fehlt: {e}"))?;
+            .map_err(i18n::gstreamer_missing)?;
         let app = Library::new("libgstapp-1.0.so.0")
-            .map_err(|e| format!("GStreamer App fehlt: {e}"))?;
-        let glib =
-            Library::new("libglib-2.0.so.0").map_err(|e| format!("GLib fehlt: {e}"))?;
+            .map_err(i18n::gstreamer_app_missing)?;
+        let glib = Library::new("libglib-2.0.so.0").map_err(i18n::glib_missing)?;
         let gobject =
-            Library::new("libgobject-2.0.so.0").map_err(|e| format!("GObject fehlt: {e}"))?;
+            Library::new("libgobject-2.0.so.0").map_err(i18n::gobject_missing)?;
         let api = Api {
             gst_init_check: *gst.get(b"gst_init_check\0").map_err(|e| e.to_string())?,
             gst_element_factory_make: *gst
@@ -173,7 +173,9 @@ fn load_api() -> Result<Api, String> {
         };
         let mut err = ptr::null_mut();
         if (api.gst_init_check)(ptr::null_mut(), ptr::null_mut(), &mut err) == 0 {
-            return Err(take_error(&api, err).unwrap_or_else(|| "GStreamer startet nicht".into()));
+            return Err(take_error(&api, err).unwrap_or_else(|| {
+                i18n::t("GStreamer startet nicht", "GStreamer failed to start").into()
+            }));
         }
         Ok(api)
     }
@@ -185,7 +187,7 @@ unsafe fn take_error(api: &Api, err: *mut GError) -> Option<String> {
             return None;
         }
         let message = if (*err).message.is_null() {
-            "unbekannter GStreamer-Fehler".into()
+            i18n::t("unbekannter GStreamer-Fehler", "unknown GStreamer error").into()
         } else {
             CStr::from_ptr((*err).message)
                 .to_string_lossy()
@@ -201,12 +203,12 @@ fn file_uri(api: &Api, path: &Path) -> Result<String, String> {
         .canonicalize()
         .unwrap_or_else(|_| path.to_path_buf());
     let c_path = CString::new(abs.to_string_lossy().as_bytes())
-        .map_err(|_| "Pfad enthält Nullbytes".to_string())?;
+        .map_err(|_| i18n::t("Pfad enthält Nullbytes", "Path contains null bytes").to_string())?;
     unsafe {
         let mut err = ptr::null_mut();
         let raw = (api.g_filename_to_uri)(c_path.as_ptr(), ptr::null(), &mut err);
         if raw.is_null() {
-            return Err(take_error(api, err).unwrap_or_else(|| "URI ungültig".into()));
+            return Err(take_error(api, err).unwrap_or_else(|| i18n::t("URI ungültig", "Invalid URI").into()));
         }
         let uri = CStr::from_ptr(raw).to_string_lossy().into_owned();
         (api.g_free)(raw as *mut c_void);
@@ -245,7 +247,7 @@ fn make_element(api: &Api, factory: &CStr, name: &CStr) -> Result<*mut c_void, S
     unsafe {
         let element = (api.gst_element_factory_make)(factory.as_ptr(), name.as_ptr());
         if element.is_null() {
-            return Err(format!("{} fehlt", factory.to_string_lossy()));
+            return Err(i18n::missing_plugin(factory.to_string_lossy()));
         }
         (api.gst_object_ref_sink)(element);
         Ok(element)
@@ -309,7 +311,9 @@ fn open_pipe(path: &Path, with_audio: bool) -> Result<Pipe, String> {
 fn wait_state(api: &Api, playbin: *mut c_void, want: i32, timeout_s: u64) -> Result<(), String> {
     unsafe {
         if (api.gst_element_set_state)(playbin, want) == GST_STATE_CHANGE_FAILURE {
-            return Err(bus_error(api, playbin).unwrap_or_else(|| "Zustand fehlgeschlagen".into()));
+            return Err(bus_error(api, playbin).unwrap_or_else(|| {
+                i18n::t("Zustand fehlgeschlagen", "State change failed").into()
+            }));
         }
         let mut state = 0;
         let mut pending = 0;
@@ -320,7 +324,9 @@ fn wait_state(api: &Api, playbin: *mut c_void, want: i32, timeout_s: u64) -> Res
             timeout_s * GST_SECOND,
         );
         if ret == GST_STATE_CHANGE_FAILURE {
-            return Err(bus_error(api, playbin).unwrap_or_else(|| "Decoder fehlgeschlagen".into()));
+            return Err(bus_error(api, playbin).unwrap_or_else(|| {
+                i18n::t("Decoder fehlgeschlagen", "Decoder failed").into()
+            }));
         }
         Ok(())
     }
@@ -365,7 +371,8 @@ unsafe fn drain_bus(api: &Api, playbin: *mut c_void) -> Option<BusEvent> {
             }
             (api.gst_object_unref)(bus);
             return Some(BusEvent::Error(
-                take_error(api, err).unwrap_or_else(|| "Wiedergabe fehlgeschlagen".into()),
+                take_error(api, err)
+                    .unwrap_or_else(|| i18n::t("Wiedergabe fehlgeschlagen", "Playback failed").into()),
             ));
         }
         let eos = (api.gst_bus_timed_pop_filtered)(bus, 0, GST_MESSAGE_EOS);
@@ -462,7 +469,7 @@ unsafe fn sample_to_frame(api: &Api, sample: *mut c_void) -> Option<Frame> {
 
 fn frame_to_image(frame: &Frame, max_edge: u32) -> Result<ColorImage, String> {
     let img = RgbaImage::from_raw(frame.width as u32, frame.height as u32, frame.pixels.clone())
-        .ok_or_else(|| "Ungültiges Videobild".to_string())?;
+        .ok_or_else(|| i18n::t("Ungültiges Videobild", "Invalid video frame").to_string())?;
     let long = frame.width.max(frame.height) as u32;
     let rgba = if long > max_edge {
         let scale = max_edge as f32 / long as f32;
@@ -489,7 +496,7 @@ pub fn thumb(path: &Path) -> Result<ColorImage, String> {
     }
     let frame = pull_frame(api, pipe.sink, true, 2 * GST_SECOND)
         .or_else(|| pull_frame(api, pipe.sink, false, 2 * GST_SECOND))
-        .ok_or_else(|| "Kein Videobild".to_string())?;
+        .ok_or_else(|| i18n::t("Kein Videobild", "No video frame").to_string())?;
     frame_to_image(&frame, THUMB_EDGE)
 }
 

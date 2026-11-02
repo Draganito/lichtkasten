@@ -118,7 +118,7 @@ pub fn scan_subdirs(dir: &Path) -> std::io::Result<Vec<DirNode>> {
             has_subdirs,
         });
     }
-    dirs.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    dirs.sort_by_key(|a| a.name.to_lowercase());
     Ok(dirs)
 }
 
@@ -172,8 +172,4 @@ fn photo_from_meta(path: PathBuf, name: String, mtime: u64, len: u64) -> Photo {
         albums_known: false,
         covers: Vec::new(),
     }
-}
-
-pub fn pictures_dir() -> Option<PathBuf> {
-    directories::UserDirs::new().and_then(|dirs| dirs.picture_dir().map(Path::to_path_buf))
 }

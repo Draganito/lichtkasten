@@ -2,13 +2,16 @@
 <component type="desktop-application">
   <id>app.lichtkasten.Lichtkasten</id>
   <name>Lichtkasten</name>
-  <summary>Ordnerbasierter Foto- und Video-Betrachter</summary>
+  <summary>Folder-based photo and video viewer</summary>
+  <summary xml:lang="de">Ordnerbasierter Foto- und Video-Betrachter</summary>
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>MIT OR Apache-2.0</project_license>
   <developer_name>Dragan Bojovic</developer_name>
   <description>
-    <p>Lichtkasten öffnet einen Ordner und zeigt die Bilder und Videos darin. Der Ordner ist die Wahrheit — es gibt keine Import-Datenbank.</p>
-    <p>Miniaturen liegen versteckt im angeschauten Verzeichnis. Videos spielt GStreamer mit den Codecs des Systems.</p>
+    <p>Lichtkasten opens a folder and shows the photos and videos inside. The folder is the source of truth — there is no import database.</p>
+    <p>Thumbnails live hidden in the folder you open. Videos play through GStreamer with the codecs on your system.</p>
+    <p xml:lang="de">Lichtkasten öffnet einen Ordner und zeigt die Bilder und Videos darin. Der Ordner ist die Wahrheit — es gibt keine Import-Datenbank.</p>
+    <p xml:lang="de">Miniaturen liegen versteckt im angeschauten Verzeichnis. Videos spielt GStreamer mit den Codecs des Systems.</p>
   </description>
   <launchable type="desktop-id">lichtkasten.desktop</launchable>
   <icon type="stock">lichtkasten</icon>

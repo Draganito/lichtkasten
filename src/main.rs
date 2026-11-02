@@ -2,9 +2,11 @@ mod albums;
 mod app;
 mod cache;
 mod decode;
+mod i18n;
 mod jobs;
 mod library;
 mod meta;
+mod open_with;
 mod orient;
 mod raw;
 mod theme;
@@ -30,6 +32,7 @@ fn main() -> eframe::Result {
         println!("lichtkasten {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
+    i18n::init();
     video::init();
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()

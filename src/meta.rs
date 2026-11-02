@@ -8,6 +8,7 @@ use little_exif::metadata::Metadata;
 use quick_xml::Reader;
 use quick_xml::events::Event;
 
+use crate::i18n;
 use crate::library::Photo;
 
 #[derive(Clone, Debug, Default)]
@@ -27,23 +28,28 @@ pub fn read_file_info(photo: &Photo) -> FileInfo {
         ..FileInfo::default()
     };
 
-    info.overview.push(("Datei".into(), photo.name.clone()));
+    info.overview
+        .push((i18n::t("Datei", "File").into(), photo.name.clone()));
     if let Some(parent) = photo.path.parent() {
         info.overview
-            .push(("Ordner".into(), parent.display().to_string()));
+            .push((i18n::t("Ordner", "Folder").into(), parent.display().to_string()));
     }
     info.overview
-        .push(("Größe".into(), format_bytes(photo.len)));
+        .push((i18n::t("Größe", "Size").into(), format_bytes(photo.len)));
     info.overview
-        .push(("Geändert".into(), format_unix(photo.mtime)));
+        .push((i18n::t("Geändert", "Modified").into(), format_unix(photo.mtime)));
 
     if crate::library::is_video_path(&photo.path) {
         if let Some(probe) = crate::video::probe(&photo.path) {
-            info.overview
-                .push(("Pixel".into(), format!("{} × {}", probe.width, probe.height)));
+            info.overview.push((
+                i18n::t("Pixel", "Pixels").into(),
+                format!("{} × {}", probe.width, probe.height),
+            ));
             if probe.duration > 0.0 {
-                info.overview
-                    .push(("Dauer".into(), crate::video::format_time(probe.duration)));
+                info.overview.push((
+                    i18n::t("Dauer", "Duration").into(),
+                    crate::video::format_time(probe.duration),
+                ));
             }
         }
     } else if !crate::library::is_raw_path(&photo.path)
@@ -53,7 +59,7 @@ pub fn read_file_info(photo: &Photo) -> FileInfo {
             .and_then(|r| r.into_dimensions().ok())
     {
         info.overview
-            .push(("Pixel".into(), format!("{w} × {h}")));
+            .push((i18n::t("Pixel", "Pixels").into(), format!("{w} × {h}")));
     }
 
     if let Some(ext) = photo
@@ -68,14 +74,14 @@ pub fn read_file_info(photo: &Photo) -> FileInfo {
         } else {
             ext.to_ascii_uppercase()
         };
-        info.overview.push(("Format".into(), kind));
+        info.overview.push((i18n::t("Format", "Format").into(), kind));
     }
 
     if crate::library::is_video_path(&photo.path) {
         info.albums = crate::albums::read(&photo.path);
         if !info.albums.is_empty() {
             info.overview
-                .push(("Alben".into(), info.albums.join(", ")));
+                .push((i18n::t("Alben", "Albums").into(), info.albums.join(", ")));
         }
         return info;
     }
@@ -86,13 +92,13 @@ pub fn read_file_info(photo: &Photo) -> FileInfo {
 
     info.exif = read_exif(&photo.path);
     fill_overview_from_metadata(&mut info);
-    info.captured = lookup(&info.exif, "Aufnahmedatum")
-        .or_else(|| lookup(&info.exif, "Digitalisiert"))
+    info.captured = lookup(&info.exif, i18n::t("Aufnahmedatum", "Date taken"))
+        .or_else(|| lookup(&info.exif, i18n::t("Digitalisiert", "Digitized")))
         .and_then(|s| parse_exif_datetime(&s));
     info.albums = crate::albums::read(&photo.path);
     if !info.albums.is_empty() {
         info.overview
-            .push(("Alben".into(), info.albums.join(", ")));
+            .push((i18n::t("Alben", "Albums").into(), info.albums.join(", ")));
     }
     info
 }
@@ -110,11 +116,11 @@ pub fn read_capture_stamp(path: &Path) -> Option<u64> {
         let Some((name, value)) = describe_tag(tag) else {
             continue;
         };
-        if name == "Aufnahmedatum" {
+        if name == i18n::t("Aufnahmedatum", "Date taken") {
             if let Some(stamp) = parse_exif_datetime(&value) {
                 return Some(stamp);
             }
-        } else if name == "Digitalisiert" {
+        } else if name == i18n::t("Digitalisiert", "Digitized") {
             digitized = parse_exif_datetime(&value);
         }
     }
@@ -139,7 +145,7 @@ fn read_exif(path: &Path) -> Vec<(String, String)> {
             rows.push(row);
         }
     }
-    rows.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
+    rows.sort_by_key(|a| a.0.to_lowercase());
     rows.dedup();
     rows
 }
@@ -179,14 +185,14 @@ fn describe_tag(tag: &ExifTag) -> Option<(String, String)> {
 
 fn orientation_label(value: &str) -> String {
     match value.trim() {
-        "1" => "Normal".into(),
-        "2" => "Gespiegelt".into(),
+        "1" => i18n::t("Normal", "Normal").into(),
+        "2" => i18n::t("Gespiegelt", "Mirrored").into(),
         "3" => "180°".into(),
-        "4" => "Vertikal gespiegelt".into(),
-        "5" => "90° + Spiegel".into(),
-        "6" => "90° im Uhrzeigersinn".into(),
-        "7" => "270° + Spiegel".into(),
-        "8" => "90° gegen Uhrzeigersinn".into(),
+        "4" => i18n::t("Vertikal gespiegelt", "Flipped vertically").into(),
+        "5" => i18n::t("90° + Spiegel", "90° + mirror").into(),
+        "6" => i18n::t("90° im Uhrzeigersinn", "90° clockwise").into(),
+        "7" => i18n::t("270° + Spiegel", "270° + mirror").into(),
+        "8" => i18n::t("90° gegen Uhrzeigersinn", "90° counterclockwise").into(),
         other => other.to_string(),
     }
 }
@@ -216,8 +222,8 @@ fn pretty_rational_list(inner: &str) -> Option<String> {
     let bytes = inner.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == b'(' {
-            if let Some(end) = inner[i + 1..].find(')') {
+        if bytes[i] == b'('
+            && let Some(end) = inner[i + 1..].find(')') {
                 let pair = &inner[i + 1..i + 1 + end];
                 let mut parts = pair.split(',');
                 let n: f64 = parts.next()?.trim().parse().ok()?;
@@ -226,7 +232,6 @@ fn pretty_rational_list(inner: &str) -> Option<String> {
                 i += end + 2;
                 continue;
             }
-        }
         i += 1;
     }
     if values.is_empty() {
@@ -252,64 +257,65 @@ fn format_rational(n: f64, d: f64) -> String {
 
 fn human_name(name: &str) -> String {
     match name {
-        "DateTimeOriginal" => "Aufnahmedatum".into(),
-        "CreateDate" => "Digitalisiert".into(),
-        "ModifyDate" => "EXIF geändert".into(),
-        "Make" => "Kamera-Hersteller".into(),
-        "Model" => "Kamera".into(),
-        "LensModel" => "Objektiv".into(),
-        "LensMake" => "Objektiv-Hersteller".into(),
-        "ExposureTime" => "Belichtung".into(),
-        "FNumber" => "Blende".into(),
+        "DateTimeOriginal" => i18n::t("Aufnahmedatum", "Date taken").into(),
+        "CreateDate" => i18n::t("Digitalisiert", "Digitized").into(),
+        "ModifyDate" => i18n::t("EXIF geändert", "EXIF modified").into(),
+        "Make" => i18n::t("Kamera-Hersteller", "Camera make").into(),
+        "Model" => i18n::t("Kamera", "Camera").into(),
+        "LensModel" => i18n::t("Objektiv", "Lens").into(),
+        "LensMake" => i18n::t("Objektiv-Hersteller", "Lens make").into(),
+        "ExposureTime" => i18n::t("Belichtung", "Exposure").into(),
+        "FNumber" => i18n::t("Blende", "Aperture").into(),
         "ISO" => "ISO".into(),
-        "FocalLength" => "Brennweite".into(),
-        "FocalLengthIn35mmFormat" => "Brennweite (KB)".into(),
-        "ExposureCompensation" => "Belichtungskorrektur".into(),
-        "Flash" => "Blitz".into(),
-        "WhiteBalance" => "Weißabgleich".into(),
-        "ColorSpace" => "Farbraum".into(),
-        "Artist" => "Autor".into(),
+        "FocalLength" => i18n::t("Brennweite", "Focal length").into(),
+        "FocalLengthIn35mmFormat" => i18n::t("Brennweite (KB)", "Focal length (35mm)").into(),
+        "ExposureCompensation" => i18n::t("Belichtungskorrektur", "Exposure compensation").into(),
+        "Flash" => i18n::t("Blitz", "Flash").into(),
+        "WhiteBalance" => i18n::t("Weißabgleich", "White balance").into(),
+        "ColorSpace" => i18n::t("Farbraum", "Color space").into(),
+        "Artist" => i18n::t("Autor", "Artist").into(),
         "Copyright" => "Copyright".into(),
-        "ImageDescription" => "Beschreibung".into(),
+        "ImageDescription" => i18n::t("Beschreibung", "Description").into(),
         "Software" => "Software".into(),
-        "Orientation" => "Ausrichtung".into(),
-        "ExifImageWidth" => "EXIF-Breite".into(),
-        "ExifImageHeight" => "EXIF-Höhe".into(),
-        "UserComment" => "Kommentar".into(),
+        "Orientation" => i18n::t("Ausrichtung", "Orientation").into(),
+        "ExifImageWidth" => i18n::t("EXIF-Breite", "EXIF width").into(),
+        "ExifImageHeight" => i18n::t("EXIF-Höhe", "EXIF height").into(),
+        "UserComment" => i18n::t("Kommentar", "Comment").into(),
         other => other.to_string(),
     }
 }
 
 fn fill_overview_from_metadata(info: &mut FileInfo) {
-    const KEYS: &[&str] = &[
-        "Aufnahmedatum",
-        "Kamera",
-        "Kamera-Hersteller",
-        "Objektiv",
-        "Belichtung",
-        "Blende",
+    let keys = [
+        i18n::t("Aufnahmedatum", "Date taken"),
+        i18n::t("Kamera", "Camera"),
+        i18n::t("Kamera-Hersteller", "Camera make"),
+        i18n::t("Objektiv", "Lens"),
+        i18n::t("Belichtung", "Exposure"),
+        i18n::t("Blende", "Aperture"),
         "ISO",
-        "Brennweite",
-        "Farbraum",
-        "Autor",
+        i18n::t("Brennweite", "Focal length"),
+        i18n::t("Farbraum", "Color space"),
+        i18n::t("Autor", "Artist"),
         "Copyright",
-        "Beschreibung",
+        i18n::t("Beschreibung", "Description"),
         "Software",
     ];
-    for key in KEYS {
-        if let Some(value) = lookup(&info.exif, key).or_else(|| lookup(&info.iptc, key)) {
-            if !info.overview.iter().any(|(k, _)| k == key) {
-                info.overview.push(((*key).into(), value));
+    for key in keys {
+        if let Some(value) = lookup(&info.exif, key).or_else(|| lookup(&info.iptc, key))
+            && !info.overview.iter().any(|(k, _)| k == key) {
+                info.overview.push((key.into(), value));
             }
-        }
     }
-    if let Some(title) = lookup(&info.iptc, "Titel").or_else(|| lookup(&info.xmp, "dc:title")) {
-        info.overview.insert(1, ("Titel".into(), title));
+    let title_key = i18n::t("Titel", "Title");
+    let caption_key = i18n::t("Beschreibung", "Description");
+    if let Some(title) = lookup(&info.iptc, title_key).or_else(|| lookup(&info.xmp, "dc:title")) {
+        info.overview.insert(1, (title_key.into(), title));
     }
-    if let Some(caption) = lookup(&info.iptc, "Beschreibung").or_else(|| lookup(&info.xmp, "dc:description"))
-        && !info.overview.iter().any(|(k, _)| k == "Beschreibung")
+    if let Some(caption) = lookup(&info.iptc, caption_key).or_else(|| lookup(&info.xmp, "dc:description"))
+        && !info.overview.iter().any(|(k, _)| k == caption_key)
     {
-        info.overview.push(("Beschreibung".into(), caption));
+        info.overview.push((caption_key.into(), caption));
     }
 }
 
@@ -467,7 +473,7 @@ fn photoshop_irb_blocks(bytes: &[u8]) -> Vec<Vec<u8>> {
         let id = u16::from_be_bytes([bytes[at + 4], bytes[at + 5]]);
         let name_len = bytes[at + 6] as usize;
         let mut pos = at + 7 + name_len;
-        if name_len % 2 == 0 {
+        if name_len.is_multiple_of(2) {
             pos += 1;
         }
         if pos + 4 > bytes.len() {
@@ -530,30 +536,30 @@ fn parse_iim(data: &[u8]) -> Vec<(String, String)> {
 
 fn iptc_name(dataset: u8) -> String {
     match dataset {
-        5 => "Titel".into(),
-        7 => "Edit-Status".into(),
-        10 => "Dringlichkeit".into(),
-        15 => "Kategorie".into(),
-        20 => "Ergänzung".into(),
-        22 => "Fixture-ID".into(),
-        25 => "Stichwort".into(),
-        40 => "Anweisungen".into(),
-        55 => "Datum".into(),
-        60 => "Zeit".into(),
-        80 => "Autor".into(),
-        85 => "Autoren-Titel".into(),
-        90 => "Stadt".into(),
-        92 => "Region".into(),
-        95 => "Bundesland".into(),
-        100 => "Land".into(),
-        101 => "Land (Name)".into(),
-        103 => "Übertragungsreferenz".into(),
-        105 => "Überschrift".into(),
+        5 => i18n::t("Titel", "Title").into(),
+        7 => i18n::t("Edit-Status", "Edit status").into(),
+        10 => i18n::t("Dringlichkeit", "Urgency").into(),
+        15 => i18n::t("Kategorie", "Category").into(),
+        20 => i18n::t("Ergänzung", "Supplemental category").into(),
+        22 => i18n::t("Fixture-ID", "Fixture ID").into(),
+        25 => i18n::t("Stichwort", "Keyword").into(),
+        40 => i18n::t("Anweisungen", "Special instructions").into(),
+        55 => i18n::t("Datum", "Date").into(),
+        60 => i18n::t("Zeit", "Time").into(),
+        80 => i18n::t("Autor", "Artist").into(),
+        85 => i18n::t("Autoren-Titel", "Byline title").into(),
+        90 => i18n::t("Stadt", "City").into(),
+        92 => i18n::t("Region", "Region").into(),
+        95 => i18n::t("Bundesland", "Province/State").into(),
+        100 => i18n::t("Land", "Country code").into(),
+        101 => i18n::t("Land (Name)", "Country").into(),
+        103 => i18n::t("Übertragungsreferenz", "Transmission reference").into(),
+        105 => i18n::t("Überschrift", "Headline").into(),
         110 => "Credit".into(),
-        115 => "Quelle".into(),
+        115 => i18n::t("Quelle", "Source").into(),
         116 => "Copyright".into(),
-        120 => "Beschreibung".into(),
-        122 => "Autor der Beschreibung".into(),
+        120 => i18n::t("Beschreibung", "Description").into(),
+        122 => i18n::t("Autor der Beschreibung", "Caption writer").into(),
         other => format!("IPTC {other}"),
     }
 }

@@ -21,6 +21,9 @@ pub struct ThumbService {
     jobs: JobQueue,
     results: JobJoin,
     inflight: HashSet<PathBuf>,
+    /// Alles, was in diesem Frame sichtbar gemeldet wurde (Raster, Filmstreifen,
+    /// Album-Deckblätter). Jobs außerhalb dieser Menge werden verworfen.
+    wanted: HashSet<PathBuf>,
     textures: LruCache<PathBuf, TextureHandle>,
     failed: HashSet<PathBuf>,
     pub pending: usize,
@@ -50,6 +53,7 @@ impl ThumbService {
             jobs,
             results,
             inflight: HashSet::new(),
+            wanted: HashSet::new(),
             textures: LruCache::new(NonZeroUsize::new(TEXTURE_LIMIT).unwrap()),
             failed: HashSet::new(),
             pending: 0,
@@ -69,6 +73,7 @@ impl ThumbService {
         self.generation += 1;
         self.jobs.clear_generation(self.generation);
         self.inflight.clear();
+        self.wanted.clear();
         self.textures.clear();
         self.failed.clear();
         self.pending = 0;
@@ -85,6 +90,8 @@ impl ThumbService {
     }
 
     pub fn poll(&mut self, ctx: &Context) -> PollOut {
+        // Neuer Frame: Sichtbarkeit wird von den Zeichenroutinen frisch gemeldet.
+        self.wanted.clear();
         while let Ok(done) = self.results.rx.try_recv() {
             self.inbox.push_back(done);
         }
@@ -209,11 +216,13 @@ impl ThumbService {
 
     pub fn request_visible(&mut self, photos: &[Photo]) {
         let generation = self.generation;
-        let visible: HashSet<&Path> = photos.iter().map(|p| p.path.as_path()).collect();
-        self.jobs.retain_thumbs(|path| visible.contains(path.as_path()));
-        self.inflight.retain(|path| {
-            visible.contains(path.as_path()) || self.view_loading.as_ref() == Some(path)
-        });
+        self.wanted
+            .extend(photos.iter().map(|photo| photo.path.clone()));
+        let wanted = &self.wanted;
+        self.jobs.retain_thumbs(|path| wanted.contains(path));
+        let view_loading = self.view_loading.as_ref();
+        self.inflight
+            .retain(|path| wanted.contains(path) || view_loading == Some(path));
         self.pending = self.inflight.len();
 
         for photo in photos {

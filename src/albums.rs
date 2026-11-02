@@ -46,7 +46,7 @@ impl AlbumStore {
             cover_mtime: 0,
             cover_len: 0,
         });
-        self.albums.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        self.albums.sort_by_key(|a| a.name.to_lowercase());
         true
     }
 
@@ -110,7 +110,7 @@ impl AlbumStore {
                 });
             }
         }
-        self.albums.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        self.albums.sort_by_key(|a| a.name.to_lowercase());
     }
 
     pub fn touch_cover_meta(&mut self, path: &Path, mtime: u64, len: u64) {
@@ -266,7 +266,7 @@ fn normalize_list(albums: &[String]) -> Vec<String> {
             out.push(name);
         }
     }
-    out.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
+    out.sort_by_key(|a| a.to_lowercase());
     out
 }
 
@@ -394,10 +394,6 @@ pub fn parse_tags(xml: &str) -> Tags {
         albums: parse_bag(xml, "albums"),
         covers: parse_bag(xml, "covers"),
     }
-}
-
-pub fn parse_albums(xml: &str) -> Vec<String> {
-    parse_bag(xml, "albums")
 }
 
 fn parse_bag(xml: &str, tag: &str) -> Vec<String> {

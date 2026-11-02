@@ -1,8 +1,8 @@
 [package]
 name = "lichtkasten"
-version = "0.2.2"
+version = "1.0.0"
 edition = "2024"
-description = "Ordnerbasierter Foto- und Video-Betrachter. Der Ordner ist die Wahrheit."
+description = "Folder-based photo and video viewer. The folder is the source of truth."
 license = "MIT OR Apache-2.0"
 authors = ["Dragan Bojovic"]
 repository = "https://github.com/Draganito/lichtkasten"
@@ -17,9 +17,11 @@ section = "graphics"
 maintainer-scripts = "packaging/debian"
 priority = "optional"
 extended-description = """\
-Lichtkasten liest den Ordner, den du öffnest. Keine Import-Datenbank. \
-Miniaturen liegen versteckt im angeschauten Verzeichnis. Videos spielt \
-GStreamer — was das System kann, kann die App."""
+Lichtkasten reads the folder you open. No import database. Thumbnails \
+live hidden inside the folder you are viewing, so external drives work \
+anywhere. Albums are stored in the files' XMP metadata. Videos play \
+through GStreamer with the codecs installed on the system. The interface \
+follows the system language (English, German)."""
 depends = "$auto, libgstreamer1.0-0, libgstreamer-plugins-base1.0-0"
 recommends = "gstreamer1.0-plugins-good, gstreamer1.0-plugins-base, gstreamer1.0-libav, gstreamer1.0-plugins-bad, gstreamer1.0-pulseaudio | gstreamer1.0-alsa"
 assets = [
@@ -32,7 +34,6 @@ assets = [
 ]
 
 [dependencies]
-directories = "6"
 eframe = { version = "0.37", features = ["persistence"] }
 egui = "0.37"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "tiff", "webp", "gif", "bmp"] }
@@ -41,6 +42,7 @@ libloading = "0.8"
 lru = "0.16"
 quick-xml = "0.38"
 rawler = "0.8"
+resvg = { version = "0.45", default-features = false }
 rfd = "0.17"
 serde = { version = "1", features = ["derive"] }
 sha2 = "0.10"

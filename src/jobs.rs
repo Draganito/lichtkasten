@@ -152,13 +152,10 @@ impl JobQueue {
             work,
         };
         drop(seq);
-        if let Ok(mut queue) = self.shared.queue.try_lock() {
-            queue.push_back(item);
-            self.shared.cond.notify_all();
-        } else if let Ok(mut queue) = self.shared.queue.lock() {
-            queue.push_back(item);
-            self.shared.cond.notify_all();
-        }
+        let mut queue = self.shared.queue.lock().unwrap_or_else(|e| e.into_inner());
+        queue.push_back(item);
+        drop(queue);
+        self.shared.cond.notify_all();
     }
 
     pub fn retain_thumbs(&self, keep: impl Fn(&PathBuf) -> bool) {
@@ -175,7 +172,7 @@ impl JobQueue {
     }
 
     pub fn cancel_views(&self) {
-        if let Ok(mut queue) = self.shared.queue.try_lock() {
+        if let Ok(mut queue) = self.shared.queue.lock() {
             queue.retain(|item| !matches!(item.work, Work::View { .. }));
         }
     }
