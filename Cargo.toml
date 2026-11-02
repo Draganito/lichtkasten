@@ -1,0 +1,43 @@
+[package]
+name = "lichtkasten"
+version = "0.1.0"
+edition = "2024"
+description = "Ordnerbasierter Foto- und Video-Betrachter. Der Ordner ist die Wahrheit."
+license = "MIT OR Apache-2.0"
+authors = ["Dragan Bojovic"]
+repository = "https://github.com/Draganito/lichtkasten"
+homepage = "https://github.com/Draganito/lichtkasten"
+readme = "README.md"
+keywords = ["photo", "viewer", "raw", "video", "egui"]
+categories = ["multimedia", "gui"]
+
+[package.metadata.deb]
+maintainer = "Dragan Bojovic"
+section = "graphics"
+priority = "optional"
+extended-description = """\
+Lichtkasten liest den Ordner, den du öffnest. Keine Import-Datenbank. \
+Miniaturen liegen versteckt im angeschauten Verzeichnis. Videos spielt \
+GStreamer — was das System kann, kann die App."""
+depends = "$auto, libgstreamer1.0-0, libgstreamer-plugins-base1.0-0"
+recommends = "gstreamer1.0-plugins-good, gstreamer1.0-plugins-base, gstreamer1.0-libav, gstreamer1.0-plugins-bad, gstreamer1.0-pulseaudio | gstreamer1.0-alsa"
+assets = [
+    ["target/release/lichtkasten", "usr/bin/", "755"],
+    ["packaging/lichtkasten.desktop", "usr/share/applications/", "644"],
+    ["packaging/lichtkasten.svg", "usr/share/icons/hicolor/scalable/apps/", "644"],
+    ["packaging/lichtkasten.metainfo.xml", "usr/share/metainfo/", "644"],
+]
+
+[dependencies]
+directories = "6"
+eframe = { version = "0.37", features = ["persistence"] }
+egui = "0.37"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "tiff", "webp", "gif", "bmp"] }
+little_exif = "0.6"
+libloading = "0.8"
+lru = "0.16"
+quick-xml = "0.38"
+rawler = "0.8"
+rfd = "0.17"
+serde = { version = "1", features = ["derive"] }
+sha2 = "0.10"

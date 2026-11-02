@@ -1,0 +1,54 @@
+name: Deb
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  deb:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo-deb
+        run: cargo install cargo-deb --locked --version 3.8.0
+
+      - name: Paket bauen
+        run: |
+          mkdir -p dist
+          cargo deb --output dist/
+
+      - name: Paket prüfen
+        run: |
+          set -euo pipefail
+          deb="$(ls dist/lichtkasten_*.deb)"
+          dpkg-deb -I "$deb"
+          dpkg-deb -c "$deb"
+          tmp="$(mktemp -d)"
+          dpkg-deb -x "$deb" "$tmp"
+          test -x "$tmp/usr/bin/lichtkasten"
+          test -f "$tmp/usr/share/applications/lichtkasten.desktop"
+          test -f "$tmp/usr/share/icons/hicolor/scalable/apps/lichtkasten.svg"
+          "$tmp/usr/bin/lichtkasten" --version
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lichtkasten-deb
+          path: dist/*.deb
+
+      - name: GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.deb
+          generate_release_notes: true

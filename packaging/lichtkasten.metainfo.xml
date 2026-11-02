@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>app.lichtkasten.Lichtkasten</id>
+  <name>Lichtkasten</name>
+  <summary>Ordnerbasierter Foto- und Video-Betrachter</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT OR Apache-2.0</project_license>
+  <developer_name>Dragan Bojovic</developer_name>
+  <description>
+    <p>Lichtkasten öffnet einen Ordner und zeigt die Bilder und Videos darin. Der Ordner ist die Wahrheit — es gibt keine Import-Datenbank.</p>
+    <p>Miniaturen liegen versteckt im angeschauten Verzeichnis. Videos spielt GStreamer mit den Codecs des Systems.</p>
+  </description>
+  <launchable type="desktop-id">lichtkasten.desktop</launchable>
+  <url type="homepage">https://github.com/Draganito/lichtkasten</url>
+  <provides>
+    <binary>lichtkasten</binary>
+  </provides>
+  <categories>
+    <category>Graphics</category>
+    <category>Photography</category>
+    <category>Viewer</category>
+  </categories>
+  <content_rating type="oars-1.1"/>
+</component>

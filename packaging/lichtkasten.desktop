@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Lichtkasten
+Comment=Ordnerbasierter Foto- und Video-Betrachter
+Exec=lichtkasten
+Icon=lichtkasten
+Terminal=false
+Categories=Graphics;Photography;Viewer;AudioVideo;
+MimeType=inode/directory;image/jpeg;image/png;image/tiff;image/webp;image/gif;image/bmp;video/mp4;video/quicktime;video/x-matroska;video/webm;
+StartupNotify=true
+Keywords=Foto;Photo;RAW;Video;Album;
