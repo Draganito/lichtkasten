@@ -54,7 +54,17 @@ pub struct Progress {
 }
 
 pub enum Event {
-    Results { seq: u64, photos: Vec<Photo> },
+    Results {
+        seq: u64,
+        photos: Vec<Photo>,
+    },
+    /// Aufnahmedaten aus dem Index, gesammelt statt tröpfchenweise.
+    Captured {
+        seq: u64,
+        stamps: Vec<(PathBuf, Option<u64>)>,
+    },
+    /// Ein Abgleich ist fertig; jetzt lohnt ein letztes Nachfragen.
+    Settled,
 }
 
 enum Cmd {
@@ -65,6 +75,14 @@ enum Cmd {
         seq: u64,
         query: String,
     },
+    /// Aufnahmedaten: direkte Kinder von `dir` oder die genannten Pfade.
+    Captured {
+        seq: u64,
+        dir: Option<PathBuf>,
+        paths: Vec<PathBuf>,
+    },
+    /// Dateien dieses Ordners beim Aufbau zuerst lesen (der Nutzer schaut hin).
+    Prioritize(PathBuf),
 }
 
 pub struct Indexer {
@@ -115,6 +133,28 @@ impl Indexer {
 
     pub fn search(&self, seq: u64, query: String) {
         self.send(Cmd::Search { seq, query });
+    }
+
+    pub fn captured_in_dir(&self, seq: u64, dir: PathBuf) {
+        self.send(Cmd::Captured {
+            seq,
+            dir: Some(dir),
+            paths: Vec::new(),
+        });
+    }
+
+    pub fn captured_for(&self, seq: u64, paths: Vec<PathBuf>) {
+        if !paths.is_empty() {
+            self.send(Cmd::Captured {
+                seq,
+                dir: None,
+                paths,
+            });
+        }
+    }
+
+    pub fn prioritize(&self, dir: PathBuf) {
+        self.send(Cmd::Prioritize(dir));
     }
 
     fn send(&self, cmd: Cmd) {
@@ -169,9 +209,6 @@ fn run(
             return;
         }
         // Alles Wartende einsammeln: Suchen sofort, Rescans zu einem zusammenfassen.
-        let mut rescan = false;
-        let mut refresh: Vec<PathBuf> = Vec::new();
-        let mut search: Option<(u64, String)> = None;
         let mut cmds = vec![first];
         loop {
             match rx.try_recv() {
@@ -180,21 +217,9 @@ fn run(
                 Err(TryRecvError::Disconnected) => return,
             }
         }
-        for cmd in cmds {
-            match cmd {
-                Cmd::Rescan => rescan = true,
-                Cmd::Refresh(paths) => refresh.extend(paths),
-                Cmd::Search { seq, query } => search = Some((seq, query)),
-            }
-        }
-        if let Some((seq, query)) = search {
-            let photos = store.search(&query);
-            on_event(Event::Results { seq, photos });
-        }
-        if !refresh.is_empty() {
-            store.refresh(&refresh);
-        }
-        if rescan {
+        let batch = store.collect(cmds);
+        store.serve(batch, &on_event);
+        if store.rescan_again {
             // Während des Abgleichs eingetroffene Rescans laufen danach nochmal.
             loop {
                 store.rescan_again = false;
@@ -204,12 +229,21 @@ fn run(
                 if !finished {
                     return;
                 }
+                on_event(Event::Settled);
                 if !store.rescan_again {
                     break;
                 }
             }
         }
     }
+}
+
+/// Zusammengefasste wartende Befehle: nur die jeweils letzte Anfrage zählt.
+#[derive(Default)]
+struct Batch {
+    search: Option<(u64, String)>,
+    captured: Option<(u64, Option<PathBuf>, Vec<PathBuf>)>,
+    refresh: Vec<PathBuf>,
 }
 
 struct Store {
@@ -224,6 +258,9 @@ struct Store {
     rescan_again: bool,
     /// Indexdateien unterhalb der Heimat, die beim nächsten Abgleich übernommen werden.
     nested: Vec<PathBuf>,
+    /// Ordner, dessen Dateien beim Aufbau vorgezogen werden.
+    priority: Option<PathBuf>,
+    priority_changed: bool,
 }
 
 enum Copied {
@@ -279,7 +316,111 @@ impl Store {
             progress,
             rescan_again: false,
             nested,
+            priority: None,
+            priority_changed: false,
         })
+    }
+
+    fn collect(&mut self, cmds: Vec<Cmd>) -> Batch {
+        let mut batch = Batch::default();
+        for cmd in cmds {
+            match cmd {
+                Cmd::Rescan => self.rescan_again = true,
+                Cmd::Refresh(paths) => batch.refresh.extend(paths),
+                Cmd::Search { seq, query } => batch.search = Some((seq, query)),
+                Cmd::Captured { seq, dir, paths } => batch.captured = Some((seq, dir, paths)),
+                Cmd::Prioritize(dir) => {
+                    if self.priority.as_ref() != Some(&dir) {
+                        self.priority = Some(dir);
+                        self.priority_changed = true;
+                    }
+                }
+            }
+        }
+        batch
+    }
+
+    fn serve(&mut self, batch: Batch, on_event: &dyn Fn(Event)) {
+        if !batch.refresh.is_empty() {
+            self.refresh(&batch.refresh);
+        }
+        if let Some((seq, query)) = batch.search {
+            let photos = self.search(&query);
+            on_event(Event::Results { seq, photos });
+        }
+        if let Some((seq, dir, paths)) = batch.captured {
+            let stamps = match dir {
+                Some(dir) => self.captured_in_dir(&dir),
+                None => self.captured_for(&paths),
+            };
+            on_event(Event::Captured { seq, stamps });
+        }
+    }
+
+    /// Aufnahmedaten aller direkten Kinder eines Ordners, soweit indiziert.
+    fn captured_in_dir(&self, dir: &Path) -> Vec<(PathBuf, Option<u64>)> {
+        let Ok(rel) = dir.strip_prefix(&self.home) else {
+            return Vec::new();
+        };
+        let rel = rel.to_string_lossy();
+        let prefix = if rel.is_empty() {
+            String::new()
+        } else {
+            format!("{rel}/")
+        };
+        let Ok(mut stmt) = self.conn.prepare_cached(
+            "SELECT path, captured FROM docs \
+             WHERE substr(path, 1, ?2) = ?1 AND instr(substr(path, ?2 + 1), '/') = 0",
+        ) else {
+            return Vec::new();
+        };
+        let rows = stmt.query_map(params![prefix, prefix.chars().count() as i64], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Option<i64>>(1)?))
+        });
+        let Ok(rows) = rows else {
+            return Vec::new();
+        };
+        rows.flatten()
+            .map(|(path, captured)| (self.home.join(path), captured.map(|c| c as u64)))
+            .collect()
+    }
+
+    /// Aufnahmedaten für eine Pfadliste (Alben): ein Durchlauf über den Teilbaum.
+    fn captured_for(&self, paths: &[PathBuf]) -> Vec<(PathBuf, Option<u64>)> {
+        let wanted: std::collections::HashSet<String> = paths
+            .iter()
+            .filter(|path| path.starts_with(&self.home))
+            .map(|path| self.relative(path))
+            .collect();
+        if wanted.is_empty() {
+            return Vec::new();
+        }
+        let Ok(mut stmt) = self
+            .conn
+            .prepare_cached("SELECT path, captured FROM docs WHERE substr(path, 1, ?2) = ?1")
+        else {
+            return Vec::new();
+        };
+        let rows = stmt.query_map(
+            params![self.prefix, self.prefix.chars().count() as i64],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<i64>>(1)?)),
+        );
+        let Ok(rows) = rows else {
+            return Vec::new();
+        };
+        rows.flatten()
+            .filter(|(path, _)| wanted.contains(path))
+            .map(|(path, captured)| (self.home.join(path), captured.map(|c| c as u64)))
+            .collect()
+    }
+
+    /// Dateien des bevorzugten Ordners nach vorn, Reihenfolge sonst unverändert.
+    fn apply_priority(&mut self, queue: &mut [Photo]) {
+        self.priority_changed = false;
+        let Some(dir) = self.priority.clone() else {
+            return;
+        };
+        queue.sort_by_key(|photo| photo.path.parent() != Some(dir.as_path()));
     }
 
     /// Gleicht den Teilbaum mit dem Index ab. `false`, wenn Schluss ist.
@@ -373,9 +514,17 @@ impl Store {
         }
 
         self.progress.total.store(pending.len(), Ordering::Relaxed);
-        for chunk in pending.chunks(BATCH) {
-            let written = self.index_chunk(chunk);
+        let mut queue = pending;
+        self.apply_priority(&mut queue);
+        let mut pos = 0;
+        while pos < queue.len() {
+            if self.priority_changed {
+                self.apply_priority(&mut queue[pos..]);
+            }
+            let end = (pos + BATCH).min(queue.len());
+            let written = self.index_chunk(&queue[pos..end]);
             self.progress.done.fetch_add(written, Ordering::Relaxed);
+            pos = end;
             if !self.serve_searches(rx, on_event) {
                 return false;
             }
@@ -545,23 +694,17 @@ impl Store {
         if self.progress.stop.load(Ordering::Relaxed) {
             return false;
         }
-        let mut latest: Option<(u64, String)> = None;
-        let mut refresh: Vec<PathBuf> = Vec::new();
+        let mut cmds = Vec::new();
         loop {
             match rx.try_recv() {
-                Ok(Cmd::Search { seq, query }) => latest = Some((seq, query)),
-                Ok(Cmd::Refresh(paths)) => refresh.extend(paths),
-                Ok(Cmd::Rescan) => self.rescan_again = true,
+                Ok(cmd) => cmds.push(cmd),
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => return false,
             }
         }
-        if !refresh.is_empty() {
-            self.refresh(&refresh);
-        }
-        if let Some((seq, query)) = latest {
-            let photos = self.search(&query);
-            on_event(Event::Results { seq, photos });
+        if !cmds.is_empty() {
+            let batch = self.collect(cmds);
+            self.serve(batch, on_event);
         }
         true
     }
@@ -571,7 +714,7 @@ impl Store {
             return Vec::new();
         };
         let mut stmt = match self.conn.prepare_cached(
-            "SELECT path FROM docs WHERE docs MATCH ?1 AND substr(path, 1, ?3) = ?2 \
+            "SELECT path, captured FROM docs WHERE docs MATCH ?1 AND substr(path, 1, ?3) = ?2 \
              ORDER BY rank LIMIT ?4",
         ) {
             Ok(stmt) => stmt,
@@ -584,13 +727,19 @@ impl Store {
                 self.prefix.chars().count() as i64,
                 MAX_RESULTS as i64
             ],
-            |row| row.get::<_, String>(0),
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<i64>>(1)?)),
         );
         let Ok(rows) = rows else {
             return Vec::new();
         };
         rows.flatten()
-            .filter_map(|rel| library::photo_from_path(&self.home.join(rel)))
+            .filter_map(|(rel, captured)| {
+                let mut photo = library::photo_from_path(&self.home.join(rel))?;
+                // Treffer bringen ihr Aufnahmedatum gleich mit.
+                photo.capture = captured.map(|c| c as u64);
+                photo.capture_known = true;
+                Some(photo)
+            })
             .collect()
     }
 

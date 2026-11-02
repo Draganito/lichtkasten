@@ -163,6 +163,9 @@ pub struct Lichtkasten {
     grid_anchor: Option<PathBuf>,
     /// Einmalig anzuwendender Scrollversatz nach einem Nachsortieren.
     grid_scroll_fix: Option<f32>,
+    /// Letzte Sammelanfrage nach Aufnahmedaten an den Index.
+    capture_seq: u64,
+    last_capture_pull: Option<std::time::Instant>,
 }
 
 enum VideoSlot {
@@ -208,6 +211,11 @@ enum ScanMsg {
         seq: u64,
         photos: Vec<Photo>,
     },
+    CapturedBulk {
+        seq: u64,
+        stamps: Vec<(PathBuf, Option<u64>)>,
+    },
+    IndexSettled,
     RestoreFolder(PathBuf),
     FolderMissing,
     PickedFolder(Option<PathBuf>),
@@ -275,6 +283,8 @@ impl Lichtkasten {
             grid_offset: 0.0,
             grid_anchor: None,
             grid_scroll_fix: None,
+            capture_seq: 0,
+            last_capture_pull: None,
         };
 
         if let Some(path) = app.prefs.last_folder.clone() {
@@ -327,11 +337,12 @@ impl Lichtkasten {
         self.indexer = Some(index::Indexer::start(
             root,
             Box::new(move |event| {
-                match event {
-                    index::Event::Results { seq, photos } => {
-                        let _ = tx.send(ScanMsg::SearchResults { seq, photos });
-                    }
-                }
+                let msg = match event {
+                    index::Event::Results { seq, photos } => ScanMsg::SearchResults { seq, photos },
+                    index::Event::Captured { seq, stamps } => ScanMsg::CapturedBulk { seq, stamps },
+                    index::Event::Settled => ScanMsg::IndexSettled,
+                };
+                let _ = tx.send(msg);
                 ctx.request_repaint();
             }),
         ));
@@ -341,6 +352,61 @@ impl Lichtkasten {
     fn rescan_index(&self) {
         if let Some(indexer) = &self.indexer {
             indexer.rescan();
+        }
+    }
+
+    /// Aufnahmedaten gesammelt aus dem Index holen statt Datei für Datei.
+    /// Eine Antwort sortiert höchstens einmal um, mit festgehaltenem Anker.
+    fn pull_captures(&mut self) {
+        let Some(indexer) = &self.indexer else {
+            return;
+        };
+        if self.in_trash || self.photos.is_empty() {
+            return;
+        }
+        self.capture_seq += 1;
+        self.last_capture_pull = Some(std::time::Instant::now());
+        if self.current_album.is_none()
+            && !self.in_search
+            && let Some(dir) = &self.current_dir
+        {
+            indexer.captured_in_dir(self.capture_seq, dir.clone());
+        } else {
+            let unknown: Vec<PathBuf> = self
+                .photos
+                .iter()
+                .filter(|photo| !photo.capture_known)
+                .map(|photo| photo.path.clone())
+                .collect();
+            indexer.captured_for(self.capture_seq, unknown);
+        }
+    }
+
+    fn any_capture_unknown(&self) -> bool {
+        self.photos.iter().any(|photo| !photo.capture_known)
+    }
+
+    /// Neu sortieren, ohne dass das oberste sichtbare Bild wegrutscht.
+    fn resort_anchored(&mut self) {
+        let keep = self.remember_path();
+        let marked = self.remember_selection();
+        let anchor = self.grid_anchor.clone();
+        let cols = self.grid_cols.max(1);
+        let old_row = anchor
+            .as_ref()
+            .and_then(|path| self.visible_index(path))
+            .map(|index| index / cols);
+        self.sort_photos();
+        self.restore_selection(keep, marked);
+        if let (Some(old_row), Some(path)) = (old_row, anchor)
+            && let Some(new_index) = self.visible_index(&path)
+        {
+            let new_row = new_index / cols;
+            if new_row != old_row {
+                let step = self.prefs.thumb_size + GAP;
+                let shift = (new_row as f32 - old_row as f32) * step;
+                self.grid_scroll_fix = Some((self.grid_offset + shift).max(0.0));
+            }
         }
     }
 
@@ -448,6 +514,11 @@ impl Lichtkasten {
         self.prefs.last_folder = Some(path.clone());
         self.scanning = true;
         self.status = i18n::reading_path(path.display());
+        // Der Index liest zuerst, was der Nutzer gerade anschaut.
+        self.last_capture_pull = None;
+        if let Some(indexer) = &self.indexer {
+            indexer.prioritize(path.clone());
+        }
         self.spawn_scan(path);
     }
 
@@ -580,6 +651,20 @@ impl Lichtkasten {
                         }
                     }
                 },
+                ScanMsg::CapturedBulk { seq, stamps } => {
+                    if seq != self.capture_seq {
+                        continue;
+                    }
+                    let changed = self.apply_captures(stamps);
+                    if changed && self.prefs.sort == SortBy::Captured {
+                        self.resort_anchored();
+                    }
+                }
+                ScanMsg::IndexSettled => {
+                    if self.any_capture_unknown() {
+                        self.pull_captures();
+                    }
+                }
                 ScanMsg::SearchResults { seq, photos } => {
                     if !self.in_search || seq != self.search_seq {
                         continue;
@@ -804,19 +889,6 @@ impl Lichtkasten {
             .collect();
         paths.sort();
         paths
-    }
-
-    fn restore_path(&mut self, path: Option<PathBuf>) {
-        let Some(path) = path else {
-            return;
-        };
-        let Some(index) = self.visible_index(&path) else {
-            return;
-        };
-        self.select_only(index);
-        if let View::Photo { index: current, .. } = &mut self.view {
-            *current = index;
-        }
     }
 
     fn restore_selection(&mut self, focus: Option<PathBuf>, paths: Vec<PathBuf>) {
@@ -1319,6 +1391,7 @@ impl Lichtkasten {
         self.meta = None;
         self.meta_loading = None;
         self.scanning = true;
+        self.last_capture_pull = None;
         self.status = i18n::reading_album(&name);
         let paths = self.album_store.paths(&name);
         let tx = self.io_tx.clone();
@@ -1506,28 +1579,23 @@ impl eframe::App for Lichtkasten {
             indexer.refresh(out.written);
         }
         if capture_changed && self.prefs.sort == SortBy::Captured {
-            let keep = self.remember_path();
-            let anchor = self.grid_anchor.clone();
-            let old_row = anchor
-                .as_ref()
-                .and_then(|path| self.visible_index(path))
-                .map(|index| index / self.grid_cols.max(1));
-            self.sort_photos();
-            self.restore_path(keep);
-            // Das oberste sichtbare Bild bleibt stehen, der Rest ordnet sich darum.
-            if let (Some(old_row), Some(path)) = (old_row, anchor)
-                && let Some(new_index) = self.visible_index(&path)
-            {
-                let new_row = new_index / self.grid_cols.max(1);
-                if new_row != old_row {
-                    let step = self.prefs.thumb_size + GAP;
-                    let shift = (new_row as f32 - old_row as f32) * step;
-                    self.grid_scroll_fix = Some((self.grid_offset + shift).max(0.0));
-                }
-            }
+            self.resort_anchored();
         }
         self.refresh_meta();
-        self.thumbs.request_captures(&self.photos, self.focus);
+        // Aufnahmedaten: aus dem Index gesammelt, solange es einen gibt; Datei
+        // für Datei nur im Papierkorb, der nicht indiziert ist.
+        if self.indexer.is_none() || self.in_trash {
+            self.thumbs.request_captures(&self.photos, self.focus);
+        } else if self.any_capture_unknown() {
+            let due = self
+                .last_capture_pull
+                .is_none_or(|t| t.elapsed() >= std::time::Duration::from_secs(3));
+            let pointer_busy = ctx.input(|i| i.pointer.any_down());
+            if due && !pointer_busy {
+                self.pull_captures();
+            }
+            ctx.request_repaint_after(std::time::Duration::from_secs(1));
+        }
         self.thumbs.request_album_reads(&self.photos, self.focus);
         if self.prefs.source == SourcePane::Albums {
             let covers = self.album_store.cover_stubs();
