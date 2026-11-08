@@ -1,0 +1,15 @@
+[package]
+name = "lichtkasten-core"
+version = "0.1.0"
+edition = "2024"
+description = "Lichtkasten decoding and metadata core, shared by the desktop app and the Android app"
+license = "MIT OR Apache-2.0"
+authors = ["Dragan Bojovic"]
+repository = "https://github.com/Draganito/lichtkasten"
+publish = false
+
+[dependencies]
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "tiff", "webp", "gif", "bmp"] }
+little_exif = "0.6"
+quick-xml = "0.38"
+rawler = "0.8"

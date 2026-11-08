@@ -1,17 +1,46 @@
+//! EXIF orientation (tag 0x0112) from the first bytes of a JPEG or TIFF
+//! container, and its application to a decoded image. Hand-rolled so that a
+//! hostile header cannot do worse than return orientation 1.
+
 use std::fs::File;
-use std::io::Read;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
 use image::DynamicImage;
+
+const HEAD_BYTES: usize = 256 * 1024;
 
 /// EXIF Orientation 1–8. 1 = unverändert.
 pub fn from_path(path: &Path) -> u8 {
     let Ok(mut file) = File::open(path) else {
         return 1;
     };
-    let mut buf = vec![0u8; 256 * 1024];
-    let n = file.read(&mut buf).unwrap_or(0);
+    from_reader(&mut file)
+}
+
+/// Like [`from_path`], from the current position of a reader. Reads at most
+/// 256 KB and seeks back to where it started.
+pub fn from_reader<R: Read + Seek>(reader: &mut R) -> u8 {
+    let Ok(start) = reader.stream_position() else {
+        return 1;
+    };
+    let mut buf = vec![0u8; HEAD_BYTES];
+    let n = read_up_to(reader, &mut buf);
+    let _ = reader.seek(SeekFrom::Start(start));
     from_bytes(&buf[..n])
+}
+
+fn read_up_to<R: Read>(reader: &mut R, buf: &mut [u8]) -> usize {
+    let mut filled = 0;
+    while filled < buf.len() {
+        match reader.read(&mut buf[filled..]) {
+            Ok(0) => break,
+            Ok(n) => filled += n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => break,
+        }
+    }
+    filled
 }
 
 pub fn from_bytes(data: &[u8]) -> u8 {

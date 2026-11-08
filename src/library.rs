@@ -2,19 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-pub const IMAGE_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png", "tif", "tiff", "webp", "gif", "bmp"];
-
-pub const RAW_EXTENSIONS: &[&str] = &[
-    "3fr", "arw", "cr2", "cr3", "crw", "dcr", "dng", "erf", "fff", "iiq", "kdc", "mdc", "mef",
-    "mos", "mrw", "nef", "nrw", "orf", "ori", "pef", "raf", "raw", "rw2", "rwl", "sr2", "srf",
-    "srw", "x3f",
-];
-
-pub const VIDEO_EXTENSIONS: &[&str] = &[
-    "3g2", "3gp", "asf", "avi", "divx", "dv", "f4v", "flv", "m2t", "m2ts", "m4v", "mkv", "mod",
-    "mov", "mp4", "mpe", "mpeg", "mpg", "mts", "mxf", "ogv", "qt", "rm", "rmvb", "tod", "ts",
-    "vob", "webm", "wmv",
-];
+pub use lichtkasten_core::ext::{is_image_path, is_media_path, is_raw_path, is_video_path};
 
 #[derive(Clone, Debug)]
 pub struct Photo {
@@ -40,28 +28,6 @@ pub struct DirNode {
     pub path: PathBuf,
     pub name: String,
     pub has_subdirs: bool,
-}
-
-fn has_ext(path: &Path, exts: &[&str]) -> bool {
-    path.extension()
-        .and_then(|ext| ext.to_str())
-        .is_some_and(|ext| exts.iter().any(|ok| ext.eq_ignore_ascii_case(ok)))
-}
-
-pub fn is_raw_path(path: &Path) -> bool {
-    has_ext(path, RAW_EXTENSIONS)
-}
-
-pub fn is_image_path(path: &Path) -> bool {
-    has_ext(path, IMAGE_EXTENSIONS) || is_raw_path(path)
-}
-
-pub fn is_video_path(path: &Path) -> bool {
-    has_ext(path, VIDEO_EXTENSIONS)
-}
-
-pub fn is_media_path(path: &Path) -> bool {
-    is_image_path(path) || is_video_path(path)
 }
 
 pub fn scan_photos(dir: &Path) -> std::io::Result<Vec<Photo>> {

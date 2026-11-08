@@ -8,8 +8,6 @@ mod jobs;
 mod library;
 mod meta;
 mod open_with;
-mod orient;
-mod raw;
 mod theme;
 mod thumbs;
 mod trash;

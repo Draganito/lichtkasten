@@ -33,15 +33,16 @@ assets = [
     ["packaging/lichtkasten.metainfo.xml", "usr/share/metainfo/", "644"],
 ]
 
+[workspace]
+members = ["crates/lichtkasten-core"]
+
 [dependencies]
+lichtkasten-core = { path = "crates/lichtkasten-core" }
 eframe = { version = "0.37", features = ["persistence"] }
 egui = "0.37"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "tiff", "webp", "gif", "bmp"] }
-little_exif = "0.6"
 libloading = "0.8"
 lru = "0.16"
-quick-xml = "0.38"
-rawler = "0.8"
 resvg = { version = "0.45", default-features = false }
 rfd = "0.17"
 rusqlite = { version = "0.37", features = ["bundled"] }

@@ -2289,15 +2289,23 @@ dependencies = [
  "egui",
  "image",
  "libloading",
- "little_exif",
+ "lichtkasten-core",
  "lru",
- "quick-xml 0.38.4",
- "rawler",
  "resvg",
  "rfd",
  "rusqlite",
  "serde",
  "sha2",
+]
+
+[[package]]
+name = "lichtkasten-core"
+version = "0.1.0"
+dependencies = [
+ "image",
+ "little_exif",
+ "quick-xml 0.38.4",
+ "rawler",
 ]
 
 [[package]]
