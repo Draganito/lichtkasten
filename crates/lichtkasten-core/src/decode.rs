@@ -169,17 +169,112 @@ pub fn decode_fitted<R: Read + Seek>(
 }
 
 /// Shrink so that the long edge is at most `edge`; never enlarges.
+///
+/// Two steps, like a thumbnailer rather than a photo editor: an integer
+/// *area* shrink (every output pixel is the plain mean of an f×f block)
+/// takes the image down to between 1× and 2× the target, then a Triangle
+/// resample covers the remaining fractional factor. The area step has no
+/// negative lobes, so no ringing at edges, and it averages sensor noise
+/// and JPEG artefacts away instead of sharpening them; it is also a single
+/// pass of additions, far cheaper than a wide kernel on a 50 MP image.
 pub fn fit_long_edge(img: DynamicImage, edge: u32) -> RgbaImage {
     let (w, h) = img.dimensions();
     let long = w.max(h);
+    let edge = edge.max(1);
     if long <= edge {
         return img.to_rgba8();
     }
-    let scale = edge as f32 / long as f32;
-    let nw = (w as f32 * scale).round().max(1.0) as u32;
-    let nh = (h as f32 * scale).round().max(1.0) as u32;
-    img.resize(nw, nh, image::imageops::FilterType::Triangle)
-        .to_rgba8()
+    let scale = edge as f64 / long as f64;
+    let nw = ((w as f64 * scale).round() as u32).max(1);
+    let nh = ((h as f64 * scale).round() as u32).max(1);
+
+    let factor = long / edge;
+    let mut rgba = if factor >= 2 {
+        area_shrink(&img, factor)
+    } else {
+        img.into_rgba8()
+    };
+    if (rgba.width(), rgba.height()) != (nw, nh) {
+        rgba = image::imageops::resize(&rgba, nw, nh, image::imageops::FilterType::Triangle);
+    }
+    rgba
+}
+
+/// Mean of each `f`×`f` block; edge blocks average whatever is left.
+/// Output is `ceil(w/f)` × `ceil(h/f)`, always RGBA8. Works on the native
+/// buffer of every 8- and 16-bit layout, so a 24 MP 16-bit TIFF is reduced
+/// first and converted after, not expanded to 100 MB of RGBA8 up front.
+fn area_shrink(img: &DynamicImage, f: u32) -> RgbaImage {
+    use DynamicImage as D;
+    match img {
+        D::ImageLuma8(b) => area_shrink_raw::<u8, 1>(b.as_raw(), b.width(), b.height(), f, 0),
+        D::ImageLumaA8(b) => area_shrink_raw::<u8, 2>(b.as_raw(), b.width(), b.height(), f, 0),
+        D::ImageRgb8(b) => area_shrink_raw::<u8, 3>(b.as_raw(), b.width(), b.height(), f, 0),
+        D::ImageRgba8(b) => area_shrink_raw::<u8, 4>(b.as_raw(), b.width(), b.height(), f, 0),
+        D::ImageLuma16(b) => area_shrink_raw::<u16, 1>(b.as_raw(), b.width(), b.height(), f, 8),
+        D::ImageLumaA16(b) => area_shrink_raw::<u16, 2>(b.as_raw(), b.width(), b.height(), f, 8),
+        D::ImageRgb16(b) => area_shrink_raw::<u16, 3>(b.as_raw(), b.width(), b.height(), f, 8),
+        D::ImageRgba16(b) => area_shrink_raw::<u16, 4>(b.as_raw(), b.width(), b.height(), f, 8),
+        other => {
+            let b = other.to_rgba8();
+            area_shrink_raw::<u8, 4>(b.as_raw(), b.width(), b.height(), f, 0)
+        }
+    }
+}
+
+/// `C` = channels in the source (1 gray, 2 gray+alpha, 3 RGB, 4 RGBA);
+/// `shift` = 8 for 16-bit samples, 0 for 8-bit.
+fn area_shrink_raw<T: Copy + Into<u64>, const C: usize>(
+    data: &[T],
+    w: u32,
+    h: u32,
+    f: u32,
+    shift: u32,
+) -> RgbaImage {
+    let (w, h, f) = (w as usize, h as usize, f as usize);
+    let ow = w.div_ceil(f);
+    let oh = h.div_ceil(f);
+    let mut out = vec![0u8; ow * oh * 4];
+    let mut sums = vec![0u64; ow * C];
+    let round = (1u64 << shift) >> 1;
+    for oy in 0..oh {
+        sums.fill(0);
+        let y0 = oy * f;
+        let y1 = (y0 + f).min(h);
+        for y in y0..y1 {
+            let row = &data[y * w * C..(y + 1) * w * C];
+            for (ox, s) in sums.as_chunks_mut::<C>().0.iter_mut().enumerate() {
+                let x0 = ox * f;
+                let x1 = (x0 + f).min(w);
+                for px in row[x0 * C..x1 * C].as_chunks::<C>().0 {
+                    for c in 0..C {
+                        s[c] += px[c].into();
+                    }
+                }
+            }
+        }
+        let rows = (y1 - y0) as u64;
+        for ox in 0..ow {
+            let cols = ((ox * f + f).min(w) - ox * f) as u64;
+            let n = rows * cols;
+            let s = &sums[ox * C..ox * C + C];
+            let mean = |c: usize| (((s[c] + n / 2) / n + round) >> shift).min(255) as u8;
+            let o = &mut out[(oy * ow + ox) * 4..(oy * ow + ox) * 4 + 4];
+            match C {
+                1 => {
+                    let g = mean(0);
+                    o.copy_from_slice(&[g, g, g, 255]);
+                }
+                2 => {
+                    let g = mean(0);
+                    o.copy_from_slice(&[g, g, g, mean(1)]);
+                }
+                3 => o.copy_from_slice(&[mean(0), mean(1), mean(2), 255]),
+                _ => o.copy_from_slice(&[mean(0), mean(1), mean(2), mean(3)]),
+            }
+        }
+    }
+    RgbaImage::from_raw(ow as u32, oh as u32, out).expect("sized above")
 }
 
 #[cfg(test)]
@@ -264,6 +359,73 @@ mod tests {
         let mut truncated = tiff_bytes(64, 64);
         truncated.truncate(truncated.len() / 2);
         assert!(decode_fitted(Cursor::new(truncated), "x.tif", 100, &DecodeLimits::MOBILE).is_err());
+    }
+
+    #[test]
+    fn area_shrink_is_the_block_mean() {
+        // 2×2 checkerboard blocks, factor 2 -> every output pixel is the mean.
+        let mut img = RgbImage::new(6, 4);
+        for (x, y, p) in img.enumerate_pixels_mut() {
+            let v = if (x + y) % 2 == 0 { 0 } else { 200 };
+            *p = Rgb([v, v, v]);
+        }
+        let out = area_shrink(&DynamicImage::ImageRgb8(img), 2);
+        assert_eq!((out.width(), out.height()), (3, 2));
+        for p in out.pixels() {
+            assert_eq!(p.0, [100, 100, 100, 255]);
+        }
+    }
+
+    #[test]
+    fn area_shrink_handles_ragged_edges() {
+        // 7×5 at factor 3: 3×2 output, the last column/row average 1 and 2 pixels.
+        let mut img = RgbaImage::new(7, 5);
+        for (x, _, p) in img.enumerate_pixels_mut() {
+            *p = image::Rgba([x as u8 * 30, 0, 0, 255]);
+        }
+        let out = area_shrink(&DynamicImage::ImageRgba8(img), 3);
+        assert_eq!((out.width(), out.height()), (3, 2));
+        assert_eq!(out.get_pixel(0, 0).0[0], 30); // mean of 0,30,60
+        assert_eq!(out.get_pixel(2, 1).0[0], 180); // column 6 alone
+        assert_eq!(out.get_pixel(2, 1).0[3], 255);
+    }
+
+    #[test]
+    fn area_shrink_16bit_and_gray() {
+        let mut g = image::ImageBuffer::<image::Luma<u16>, Vec<u16>>::new(4, 4);
+        for p in g.pixels_mut() {
+            *p = image::Luma([0x8000]);
+        }
+        let out = area_shrink(&DynamicImage::ImageLuma16(g), 2);
+        assert_eq!((out.width(), out.height()), (2, 2));
+        assert_eq!(out.get_pixel(1, 1).0, [128, 128, 128, 255]);
+
+        let mut c = image::ImageBuffer::<image::Rgb<u16>, Vec<u16>>::new(4, 2);
+        for p in c.pixels_mut() {
+            *p = image::Rgb([0xFFFF, 0, 0x0100]);
+        }
+        let out = area_shrink(&DynamicImage::ImageRgb16(c), 2);
+        assert_eq!(out.get_pixel(0, 0).0, [255, 0, 1, 255]);
+    }
+
+    #[test]
+    fn fit_long_edge_hits_exact_size_and_preserves_flat_colour() {
+        let mut img = RgbImage::new(6000, 4000);
+        for p in img.pixels_mut() {
+            *p = Rgb([10, 128, 250]);
+        }
+        let out = fit_long_edge(DynamicImage::ImageRgb8(img), 512);
+        assert_eq!((out.width(), out.height()), (512, 341));
+        assert_eq!(out.get_pixel(100, 100).0, [10, 128, 250, 255]);
+        assert_eq!(out.get_pixel(511, 340).0, [10, 128, 250, 255]);
+    }
+
+    #[test]
+    fn fit_long_edge_never_enlarges_and_handles_small_factors() {
+        let img = DynamicImage::ImageRgb8(RgbImage::new(100, 50));
+        assert_eq!(fit_long_edge(img.clone(), 500).dimensions(), (100, 50));
+        // factor 1.6: no area step, Triangle only
+        assert_eq!(fit_long_edge(img, 60).dimensions(), (60, 30));
     }
 
     #[test]
