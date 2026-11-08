@@ -8,8 +8,15 @@ authors = ["Dragan Bojovic"]
 repository = "https://github.com/Draganito/lichtkasten"
 publish = false
 
+[features]
+default = ["rawler"]
+# Full RAW decoding (demosaic) when a file has no embedded JPEG preview.
+# rawler is LGPL-2.1; the desktop app ships it, the Android app does not
+# and shows the embedded preview only.
+rawler = ["dep:rawler"]
+
 [dependencies]
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "tiff", "webp", "gif", "bmp"] }
 little_exif = "0.6"
 quick-xml = "0.38"
-rawler = "0.8"
+rawler = { version = "0.8", optional = true }

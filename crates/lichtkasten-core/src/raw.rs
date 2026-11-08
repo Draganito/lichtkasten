@@ -1,14 +1,12 @@
-//! RAW previews: the largest embedded JPEG when there is one, otherwise a
-//! rawler render. rawler is wrapped in `catch_unwind`; it is a large parser
-//! fed with camera firmware output.
+//! RAW previews: the largest embedded JPEG when there is one, otherwise
+//! (feature `rawler`) a rawler render. rawler is wrapped in `catch_unwind`;
+//! it is a large parser fed with camera firmware output.
 
 use std::fs;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
-use std::sync::Arc;
 
 use image::DynamicImage;
-use rawler::rawsource::RawSource;
 
 use crate::decode::{DecodeError, DecodeLimits, stream_len};
 use crate::orient;
@@ -16,11 +14,16 @@ use crate::orient;
 const SCAN_LIMIT: u64 = 80 * 1024 * 1024;
 const MAX_JPEG: usize = 16 * 1024 * 1024;
 
-/// Preview from a seekable stream (Android: a file descriptor). Falls back
-/// to rawler on the whole file, which is read into memory up to
-/// `limits.max_file`. On this path rawler is asked for its preview first
-/// whatever `target` is: a full demosaic of a 50 MP file is hundreds of
-/// megabytes, more than a phone process should allocate for one view.
+fn no_preview() -> DecodeError {
+    DecodeError::Unsupported("keine RAW-Vorschau gefunden".into())
+}
+
+/// Preview from a seekable stream (Android: a file descriptor). With the
+/// `rawler` feature it falls back to rawler on the whole file, which is read
+/// into memory up to `limits.max_file`. On this path rawler is asked for its
+/// preview first whatever `target` is: a full demosaic of a 50 MP file is
+/// hundreds of megabytes, more than a phone process should allocate for one
+/// view. Without the feature only the embedded JPEG is used.
 pub fn load_preview<R: Read + Seek>(
     reader: &mut R,
     target: u32,
@@ -43,12 +46,16 @@ pub fn load_preview<R: Read + Seek>(
     if let Some(img) = embedded_jpeg(&data, limits) {
         return Ok(img);
     }
-    if (data.len() as u64) < len {
-        reader.read_to_end(&mut data)?;
+    #[cfg(feature = "rawler")]
+    {
+        if (data.len() as u64) < len {
+            reader.read_to_end(&mut data)?;
+        }
+        let source = rawler::rawsource::RawSource::new_from_shared_vec(std::sync::Arc::new(data));
+        rawler_preview(&source, false, limits).ok_or_else(no_preview)
     }
-    let source = RawSource::new_from_shared_vec(Arc::new(data));
-    rawler_preview(&source, false, limits)
-        .ok_or_else(|| DecodeError::Unsupported("keine RAW-Vorschau gefunden".into()))
+    #[cfg(not(feature = "rawler"))]
+    Err(no_preview())
 }
 
 /// Preview from a path (desktop): same scan, but rawler maps the file
@@ -63,9 +70,16 @@ pub fn load_preview_path(
     {
         return Ok(img);
     }
-    let source = RawSource::new(path)?;
-    rawler_preview(&source, target >= 1200, limits)
-        .ok_or_else(|| DecodeError::Unsupported("keine RAW-Vorschau gefunden".into()))
+    #[cfg(feature = "rawler")]
+    {
+        let source = rawler::rawsource::RawSource::new(path)?;
+        rawler_preview(&source, target >= 1200, limits).ok_or_else(no_preview)
+    }
+    #[cfg(not(feature = "rawler"))]
+    {
+        let _ = target;
+        Err(no_preview())
+    }
 }
 
 fn read_scan_prefix(path: &Path) -> Option<Vec<u8>> {
@@ -181,7 +195,12 @@ fn find_eoi(data: &[u8]) -> Option<usize> {
     None
 }
 
-fn rawler_preview(source: &RawSource, prefer_full: bool, limits: &DecodeLimits) -> Option<DynamicImage> {
+#[cfg(feature = "rawler")]
+fn rawler_preview(
+    source: &rawler::rawsource::RawSource,
+    prefer_full: bool,
+    limits: &DecodeLimits,
+) -> Option<DynamicImage> {
     let rgb = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         rawler_rgb(source, prefer_full)
     }))
@@ -195,7 +214,8 @@ fn rawler_preview(source: &RawSource, prefer_full: bool, limits: &DecodeLimits) 
     Some(DynamicImage::ImageRgb8(buf))
 }
 
-fn rawler_rgb(rawfile: &RawSource, prefer_full: bool) -> Option<(u32, u32, Vec<u8>)> {
+#[cfg(feature = "rawler")]
+fn rawler_rgb(rawfile: &rawler::rawsource::RawSource, prefer_full: bool) -> Option<(u32, u32, Vec<u8>)> {
     let decoder = rawler::get_decoder(rawfile).ok()?;
     let params = rawler::decoders::RawDecodeParams::default();
     let img = if prefer_full {

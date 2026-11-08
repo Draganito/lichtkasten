@@ -70,3 +70,9 @@ The UI picks the language from `LC_ALL`, `LC_MESSAGES`, `LANG`, `LANGUAGE`. Germ
 ## License
 
 MIT or Apache-2.0, at your option.
+
+Third-party crates and their licenses are listed in [THIRD_PARTY.md](THIRD_PARTY.md).
+`rawler` (RAW demosaicing) is LGPL-2.1 and statically linked; since the
+whole program is open source you can rebuild it with a modified rawler.
+`crates/lichtkasten-core` builds without it (`--no-default-features`), which
+is what the Android app does.
