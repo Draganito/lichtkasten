@@ -18,12 +18,15 @@ const MAX_JPEG: usize = 16 * 1024 * 1024;
 
 /// Preview from a seekable stream (Android: a file descriptor). Falls back
 /// to rawler on the whole file, which is read into memory up to
-/// `limits.max_file`.
+/// `limits.max_file`. On this path rawler is asked for its preview first
+/// whatever `target` is: a full demosaic of a 50 MP file is hundreds of
+/// megabytes, more than a phone process should allocate for one view.
 pub fn load_preview<R: Read + Seek>(
     reader: &mut R,
     target: u32,
     limits: &DecodeLimits,
 ) -> Result<DynamicImage, DecodeError> {
+    let _ = target;
     let len = stream_len(reader)?;
     if len > limits.max_file {
         return Err(DecodeError::TooLarge(format!(
@@ -44,7 +47,7 @@ pub fn load_preview<R: Read + Seek>(
         reader.read_to_end(&mut data)?;
     }
     let source = RawSource::new_from_shared_vec(Arc::new(data));
-    rawler_preview(&source, target >= 1200, limits)
+    rawler_preview(&source, false, limits)
         .ok_or_else(|| DecodeError::Unsupported("keine RAW-Vorschau gefunden".into()))
 }
 
