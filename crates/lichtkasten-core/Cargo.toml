@@ -14,9 +14,15 @@ default = ["rawler"]
 # rawler is LGPL-2.1; the desktop app ships it, the Android app does not
 # and shows the embedded preview only.
 rawler = ["dep:rawler"]
+# Lossless JPEG cropping (DCT blocks copied, never re-encoded) through
+# libjpeg-turbo's jpegtran code in mozjpeg-sys (IJG/BSD/Zlib). Built from C
+# with `cc`, no SIMD, so it cross-compiles wherever the Rust code does.
+lossless-jpeg = ["dep:mozjpeg-sys", "dep:libc"]
 
 [dependencies]
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "tiff", "webp", "gif", "bmp"] }
 little_exif = "0.6"
 quick-xml = "0.38"
 rawler = { version = "0.8", optional = true }
+mozjpeg-sys = { version = "2.2", optional = true, default-features = false, features = ["jpegtran", "unwinding", "parallel"] }
+libc = { version = "0.2", optional = true }

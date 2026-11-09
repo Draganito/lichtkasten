@@ -10,6 +10,8 @@
 
 pub mod decode;
 pub mod ext;
+#[cfg(feature = "lossless-jpeg")]
+pub mod jpeg_lossless;
 pub mod meta;
 pub mod orient;
 pub mod raw;
